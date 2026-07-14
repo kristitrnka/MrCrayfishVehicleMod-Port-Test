@@ -1,4 +1,4 @@
-name: Temporary Oculus 1.12.2 Production Test v4
+name: Temporary Oculus 1.12.2 Full Production Test
 
 on:
   push:
@@ -10,32 +10,99 @@ on:
 jobs:
   production-runtime:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      actions: read
-      contents: read
+    timeout-minutes: 60
     steps:
-      - name: Download corrected Oculus JAR
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Clone and patch Oculus
         run: |
-          gh run download 29325411055 --repo "$GITHUB_REPOSITORY" \
-            --name Oculus-1.12.2-production-v3 --dir "$RUNNER_TEMP/source"
-          jar_path=$(find "$RUNNER_TEMP/source" -name 'oculus-0.1.0.jar' -type f | head -n 1)
-          test -n "$jar_path"
-          cp "$jar_path" "$RUNNER_TEMP/oculus-0.1.0.jar"
+          git clone --depth 1 --branch 1.12.2-dev https://github.com/dabrelity1/Oculus.git "$RUNNER_TEMP/Oculus"
+          cd "$RUNNER_TEMP/Oculus/oculus-1.12.2"
           python3 - <<'PY'
-          import os, zipfile
-          path = os.path.join(os.environ['RUNNER_TEMP'], 'oculus-0.1.0.jar')
-          with zipfile.ZipFile(path) as archive:
-              count_old = sum(archive.read(i.filename).count(b'func_185906_d') for i in archive.infolist())
-              count_new = sum(archive.read(i.filename).count(b'func_185892_j') for i in archive.infolist())
-          print('Old AO target occurrences:', count_old)
-          print('Correct AO target occurrences:', count_new)
-          if count_old != 0 or count_new < 1:
-              raise SystemExit('AO target patch verification failed')
+          from pathlib import Path
+
+          gradle = Path('build.gradle')
+          text = gradle.read_text()
+          text = text.replace(
+              'def outRefmapFile = file("${buildDir}/resources/main/oculus.refmap.json")',
+              'def outRefmapFile = file("${buildDir}/generated/mixins/oculus.refmap.json")'
+          )
+          marker = '''jar {
+              manifest {'''
+          replacement = '''jar {
+              dependsOn compileJava
+              from(outRefmapFile) {
+                  into ""
+              }
+
+              manifest {'''
+          if marker not in text:
+              raise SystemExit('JAR block marker not found')
+          gradle.write_text(text.replace(marker, replacement, 1))
+
+          Path('src/main/java/net/oculus/mixin/pipeline/BlockStateAmbientOcclusionMixin.java').write_text('''package net.oculus.mixin.pipeline;
+
+          import net.minecraft.block.state.BlockStateContainer;
+          import net.oculus.pipeline.BlockRenderingSettings;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(value = BlockStateContainer.StateImplementation.class, priority = 990)
+          public abstract class BlockStateAmbientOcclusionMixin {
+              @Inject(
+                  method = "getAmbientOcclusionLightValue()F",
+                  at = @At("RETURN"),
+                  cancellable = true)
+              private void oculus$applyAmbientOcclusionLevel(CallbackInfoReturnable<Float> cir) {
+                  cir.setReturnValue(BlockRenderingSettings.INSTANCE.applyAmbientOcclusionLevel(cir.getReturnValueF()));
+              }
+          }
+          ''')
+
+          Path('src/main/java/net/oculus/mixin/pipeline/TextLanguageMapMixin.java').write_text('''package net.oculus.mixin.pipeline;
+
+          import net.minecraft.util.text.translation.LanguageMap;
+          import net.oculus.shaderpack.ShaderPackLanguageLookup;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(value = LanguageMap.class, priority = 990)
+          public abstract class TextLanguageMapMixin {
+              @Inject(method = "translateKey(Ljava/lang/String;)Ljava/lang/String;", at = @At("RETURN"), cancellable = true)
+              private void oculus$translateShaderPackKey(String key, CallbackInfoReturnable<String> cir) {
+                  if (key == null || !key.equals(cir.getReturnValue())) {
+                      return;
+                  }
+                  String translation = ShaderPackLanguageLookup.lookupActive(key);
+                  if (translation != null) {
+                      cir.setReturnValue(translation);
+                  }
+              }
+
+              @Inject(method = "translateKeyFormat(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;", at = @At("HEAD"), cancellable = true)
+              private void oculus$formatShaderPackKey(String key, Object[] parameters, CallbackInfoReturnable<String> cir) {
+                  String translation = ShaderPackLanguageLookup.lookupActive(key);
+                  if (translation != null) {
+                      cir.setReturnValue(ShaderPackLanguageLookup.formatVanilla(translation, parameters));
+                  }
+              }
+
+              @Inject(method = "isKeyTranslated(Ljava/lang/String;)Z", at = @At("RETURN"), cancellable = true)
+              private void oculus$hasShaderPackKey(String key, CallbackInfoReturnable<Boolean> cir) {
+                  if (!cir.getReturnValue() && ShaderPackLanguageLookup.lookupActive(key) != null) {
+                      cir.setReturnValue(true);
+                  }
+              }
+
+              @Inject(method = "getLastUpdateTimeInMilliseconds()J", at = @At("RETURN"), cancellable = true)
+              private void oculus$includeShaderPackReloadVersion(CallbackInfoReturnable<Long> cir) {
+                  cir.setReturnValue(ShaderPackLanguageLookup.getTextComponentLanguageVersion(cir.getReturnValue()));
+              }
+          }
+          ''')
           PY
-          jar tf "$RUNNER_TEMP/oculus-0.1.0.jar" | grep -E 'oculus.refmap.json|BlockStateAmbientOcclusionMixin.class'
 
       - name: Set up Java 8
         uses: actions/setup-java@v4
@@ -43,10 +110,32 @@ jobs:
           distribution: temurin
           java-version: '8'
 
+      - name: Build reobfuscated Oculus with retries
+        working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
+        run: |
+          chmod +x gradlew
+          status=1
+          for attempt in 1 2 3; do
+            echo "=== BUILD ATTEMPT $attempt ==="
+            ./gradlew --no-daemon --console=plain build -x test -x compileTestJava > build.log 2>&1
+            status=$?
+            tail -n 220 build.log
+            if [ "$status" -eq 0 ]; then
+              break
+            fi
+            sleep 12
+          done
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          jar tf build/libs/oculus-0.1.0.jar | grep -E 'oculus.refmap.json|BlockStateAmbientOcclusionMixin.class|TextLanguageMapMixin.class'
+          unzip -p build/libs/oculus-0.1.0.jar oculus.refmap.json | grep -E 'getAmbientOcclusionLightValue|translateKey' | head -n 20
+          tar -czf patched-source.tar.gz src/main/java src/main/resources build.gradle
+
       - name: Assemble real Forge installation
         env:
           MC_DIR: ${{ runner.temp }}/minecraft-production
-          OCULUS_JAR: ${{ runner.temp }}/oculus-0.1.0.jar
+          OCULUS_JAR: ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
         run: |
           python3 -m pip install --quiet minecraft-launcher-lib
           python3 - <<'PY' > "$RUNNER_TEMP/install.log" 2>&1
@@ -57,11 +146,11 @@ jobs:
               path = pathlib.Path(path)
               path.parent.mkdir(parents=True, exist_ok=True)
               print('Downloading:', url)
-              req = urllib.request.Request(url, headers={
+              request = urllib.request.Request(url, headers={
                   'User-Agent': 'Mozilla/5.0 Oculus production test',
                   'Accept': '*/*'
               })
-              with urllib.request.urlopen(req, timeout=180) as response, path.open('wb') as output:
+              with urllib.request.urlopen(request, timeout=180) as response, path.open('wb') as output:
                   shutil.copyfileobj(response, output)
 
           mc = pathlib.Path(os.environ['MC_DIR'])
@@ -104,7 +193,7 @@ jobs:
           command = minecraft_launcher_lib.command.get_minecraft_command(version_id, str(mc), options)
           (mc / 'launch-command.json').write_text(json.dumps(command))
           print('Version:', version_id)
-          print('Mods:', sorted(p.name for p in mods.iterdir()))
+          print('Mods:', sorted(path.name for path in mods.iterdir()))
           PY
           status=$?
           echo '=== INSTALL LOG ==='
@@ -158,7 +247,7 @@ jobs:
           import json, os, pathlib, shlex
           mc = pathlib.Path(os.environ['MC_DIR'])
           command = json.loads((mc / 'launch-command.json').read_text())
-          (mc / 'run.sh').write_text('#!/bin/sh\nexec ' + ' '.join(shlex.quote(x) for x in command) + '\n')
+          (mc / 'run.sh').write_text('#!/bin/sh\nexec ' + ' '.join(shlex.quote(part) for part in command) + '\n')
           os.chmod(mc / 'run.sh', 0o755)
           PY
 
@@ -168,10 +257,10 @@ jobs:
           sudo kill "$xorg_pid" 2>/dev/null || true
 
           echo '=== PRODUCTION RUNTIME LOG ==='
-          tail -n 550 "$MC_DIR/production-runtime.log"
+          tail -n 600 "$MC_DIR/production-runtime.log"
           if [ -f "$MC_DIR/logs/latest.log" ]; then
             echo '=== LATEST.LOG ==='
-            tail -n 550 "$MC_DIR/logs/latest.log"
+            tail -n 600 "$MC_DIR/logs/latest.log"
           fi
 
           fatal='Mixin apply.*failed|InvalidInjectionException|InvalidMixinException|MixinTransformerError|Unable to launch|Exception in thread "(main|Client thread)"|A fatal error has been detected'
@@ -184,13 +273,15 @@ jobs:
           fi
           exit "$status"
 
-      - name: Upload JAR and logs
+      - name: Upload JAR and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Oculus-1.12.2-production-v4
+          name: Oculus-1.12.2-full-production
           path: |
-            ${{ runner.temp }}/oculus-0.1.0.jar
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/build.log
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/patched-source.tar.gz
             ${{ runner.temp }}/install.log
             ${{ runner.temp }}/minecraft-production/production-runtime.log
             ${{ runner.temp }}/minecraft-production/logs/latest.log
