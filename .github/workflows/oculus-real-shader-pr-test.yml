@@ -26,9 +26,40 @@ jobs:
           java-version: '8'
 
       - name: Run production Minecraft shader validation
+        id: validation
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL 'https://raw.githubusercontent.com/kristitrnka/MrCrayfishVehicleMod-Port-Test/10c19389be657a3f5a24f5339b820b55d861bd2b/.github/scripts/oculus-real-shader-test.sh' -o /tmp/oculus-real-shader-test.sh
           chmod +x /tmp/oculus-real-shader-test.sh
-          /tmp/oculus-real-shader-test.sh
+          set +e
+          /tmp/oculus-real-shader-test.sh > "$RUNNER_TEMP/oculus-validation-full.log" 2>&1
+          status=$?
+          printf '%s\n' "$status" > "$RUNNER_TEMP/oculus-validation-exit-code.txt"
+          echo '=== VALIDATION LOG TAIL ==='
+          tail -n 180 "$RUNNER_TEMP/oculus-validation-full.log"
+          exit "$status"
+
+      - name: Upload validation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oculus-real-shader-validation-diagnostics
+          path: |
+            ${{ runner.temp }}/oculus-validation-full.log
+            ${{ runner.temp }}/oculus-validation-exit-code.txt
+            ${{ runner.temp }}/oculus-validation-results/**
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/build.log
+            ${{ runner.temp }}/minecraft-shader-test/shader-runtime.log
+            ${{ runner.temp }}/minecraft-shader-test/logs/latest.log
+            ${{ runner.temp }}/minecraft-shader-test/screenshots/*.png
+            ${{ runner.temp }}/vanilla-server/server.log
+            /tmp/xorg.log
+          if-no-files-found: warn
+          retention-days: 2
+
+      - name: Enforce validation result
+        if: always()
+        run: test '${{ steps.validation.outcome }}' = 'success'
