@@ -17,7 +17,7 @@ jobs:
       - name: Clone Oculus
         run: git clone --depth 1 --branch 1.12.2-dev https://github.com/dabrelity1/Oculus.git "$RUNNER_TEMP/Oculus"
 
-      - name: Patch refmap packaging
+      - name: Patch refmap packaging and test JVM
         working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
         run: |
           python3 - <<'PY'
@@ -41,6 +41,10 @@ jobs:
           if old not in text:
               raise SystemExit('jar block marker not found')
           text = text.replace(old, new, 1)
+          text = text.replace(
+              'jvmArgs "-Dmixin.debug.verbose=true", "-Dmixin.debug.export=true"',
+              'jvmArgs "-Dmixin.debug.verbose=true", "-Dmixin.debug.export=true", "-DLWJGL_DISABLE_XRANDR=true", "-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true"'
+          )
           gradle.write_text(text)
           PY
 
