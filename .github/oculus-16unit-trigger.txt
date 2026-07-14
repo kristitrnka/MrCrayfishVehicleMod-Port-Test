@@ -1,1 +1,1 @@
-Trigger Oculus 16 texture unit validation.
+Trigger Oculus 16 texture unit validation — synchronize 2.
