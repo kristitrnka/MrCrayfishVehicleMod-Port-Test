@@ -94,6 +94,15 @@ jobs:
           import urllib.request
           import minecraft_launcher_lib
 
+          def download(url, destination):
+              destination = pathlib.Path(destination)
+              request = urllib.request.Request(url, headers={
+                  'User-Agent': 'Mozilla/5.0 Oculus-1.12.2-CI',
+                  'Accept': '*/*',
+              })
+              with urllib.request.urlopen(request, timeout=180) as response, destination.open('wb') as output:
+                  shutil.copyfileobj(response, output)
+
           mc = pathlib.Path(os.environ['MC_DIR'])
           mc.mkdir(parents=True, exist_ok=True)
           java = os.path.join(os.environ['JAVA_HOME'], 'bin', 'java')
@@ -109,7 +118,7 @@ jobs:
           installer = mc / 'forge-installer.jar'
           installer_url = f'https://maven.minecraftforge.net/net/minecraftforge/forge/{forge_full}/forge-{forge_full}-installer.jar'
           print('Downloading Forge installer:', installer_url)
-          urllib.request.urlretrieve(installer_url, installer)
+          download(installer_url, installer)
 
           attempts = [
               [java, '-jar', str(installer), '--installClient', str(mc)],
@@ -143,7 +152,7 @@ jobs:
           }
           for name, url in downloads.items():
               print('Downloading', url)
-              urllib.request.urlretrieve(url, mods / name)
+              download(url, mods / name)
 
           options = minecraft_launcher_lib.utils.generate_test_options()
           options.update({
