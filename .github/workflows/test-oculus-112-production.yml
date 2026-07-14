@@ -70,43 +70,85 @@ jobs:
           ./gradlew --no-daemon --console=plain build -x test -x compileTestJava > build.log 2>&1
           tail -n 150 build.log
           jar tf build/libs/oculus-0.1.0.jar | grep oculus.refmap.json
+          tar -czf patched-source.tar.gz src/main/java src/main/resources build.gradle
 
       - name: Install real Minecraft and Forge
         env:
           MC_DIR: ${{ runner.temp }}/minecraft-production
           OCULUS_JAR: ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
         run: |
-          python3 -m pip install --quiet minecraft-launcher-lib
-          python3 - <<'PY'
+          set +e
+          python3 -m pip install --quiet minecraft-launcher-lib > "$RUNNER_TEMP/pip-install.log" 2>&1
+          pip_status=$?
+          if [ "$pip_status" -ne 0 ]; then
+            cat "$RUNNER_TEMP/pip-install.log"
+            exit "$pip_status"
+          fi
+
+          python3 - <<'PY' > "$RUNNER_TEMP/forge-install.log" 2>&1
           import json
           import os
           import pathlib
           import shutil
+          import subprocess
           import urllib.request
           import minecraft_launcher_lib
 
           mc = pathlib.Path(os.environ['MC_DIR'])
           mc.mkdir(parents=True, exist_ok=True)
-          forge = '1.12.2-14.23.5.2768'
-          minecraft_launcher_lib.forge.install_forge_version(forge, str(mc), java=os.path.join(os.environ['JAVA_HOME'], 'bin', 'java'))
+          java = os.path.join(os.environ['JAVA_HOME'], 'bin', 'java')
+          forge_full = '1.12.2-14.23.5.2768'
+
+          print('Installing vanilla 1.12.2...')
+          minecraft_launcher_lib.install.install_minecraft_version('1.12.2', str(mc))
+
+          profile = mc / 'launcher_profiles.json'
+          if not profile.exists():
+              profile.write_text(json.dumps({'profiles': {}, 'selectedProfile': ''}))
+
+          installer = mc / 'forge-installer.jar'
+          installer_url = f'https://maven.minecraftforge.net/net/minecraftforge/forge/{forge_full}/forge-{forge_full}-installer.jar'
+          print('Downloading Forge installer:', installer_url)
+          urllib.request.urlretrieve(installer_url, installer)
+
+          attempts = [
+              [java, '-jar', str(installer), '--installClient', str(mc)],
+              [java, '-jar', str(installer), '--installClient'],
+          ]
+          installed = False
+          for command in attempts:
+              print('Running:', command)
+              result = subprocess.run(command, cwd=str(mc), text=True)
+              print('Exit:', result.returncode)
+              if result.returncode == 0:
+                  installed = True
+                  break
+          if not installed:
+              raise SystemExit('Forge installer failed in all headless modes')
+
+          versions = minecraft_launcher_lib.utils.get_installed_versions(str(mc))
+          print('Installed versions:', versions)
+          forge_versions = [v['id'] for v in versions if 'forge' in v['id'].lower() and '1.12.2' in v['id']]
+          if not forge_versions:
+              raise SystemExit('No installed Forge 1.12.2 profile found')
+          version = forge_versions[-1]
 
           mods = mc / 'mods'
           mods.mkdir(exist_ok=True)
           shutil.copy2(os.environ['OCULUS_JAR'], mods / 'oculus-0.1.0-production-test.jar')
 
           downloads = {
-              'mixinbooter-11.5.jar': 'https://maven.rongmario.com/zone/rong/mixinbooter/11.5/mixinbooter-11.5.jar',
+              '-mixinbooter-11.5.jar': 'https://maven.rongmario.com/zone/rong/mixinbooter/11.5/mixinbooter-11.5.jar',
               'relictium-1.2.0.jar': 'https://api.modrinth.com/maven/maven/modrinth/relictium/1.2.0/relictium-1.2.0.jar',
           }
           for name, url in downloads.items():
               print('Downloading', url)
               urllib.request.urlretrieve(url, mods / name)
 
-          version = minecraft_launcher_lib.forge.forge_to_installed_version(forge)
           options = minecraft_launcher_lib.utils.generate_test_options()
           options.update({
-              'executablePath': os.path.join(os.environ['JAVA_HOME'], 'bin', 'java'),
-              'defaultExecutablePath': os.path.join(os.environ['JAVA_HOME'], 'bin', 'java'),
+              'executablePath': java,
+              'defaultExecutablePath': java,
               'gameDirectory': str(mc),
               'customResolution': True,
               'resolutionWidth': '1280',
@@ -115,9 +157,13 @@ jobs:
           })
           command = minecraft_launcher_lib.command.get_minecraft_command(version, str(mc), options)
           (mc / 'launch-command.json').write_text(json.dumps(command))
-          print('Installed version:', version)
-          print('Mods:', [p.name for p in mods.iterdir()])
+          print('Selected version:', version)
+          print('Mods:', sorted(p.name for p in mods.iterdir()))
           PY
+          install_status=$?
+          echo '=== FORGE INSTALL LOG ==='
+          tail -n 300 "$RUNNER_TEMP/forge-install.log"
+          exit "$install_status"
 
       - name: Run real obfuscated Forge client
         env:
@@ -199,6 +245,9 @@ jobs:
           path: |
             ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
             ${{ runner.temp }}/Oculus/oculus-1.12.2/build.log
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/patched-source.tar.gz
+            ${{ runner.temp }}/forge-install.log
+            ${{ runner.temp }}/pip-install.log
             ${{ runner.temp }}/minecraft-production/production-runtime.log
             ${{ runner.temp }}/minecraft-production/logs/latest.log
             ${{ runner.temp }}/minecraft-production/crash-reports/*.txt
