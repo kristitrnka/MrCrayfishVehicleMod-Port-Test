@@ -17,7 +17,7 @@ jobs:
       - name: Clone Oculus
         run: git clone --depth 1 --branch 1.12.2-dev https://github.com/dabrelity1/Oculus.git "$RUNNER_TEMP/Oculus"
 
-      - name: Patch refmap packaging and test JVM
+      - name: Patch refmap packaging
         working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
         run: |
           python3 - <<'PY'
@@ -41,10 +41,6 @@ jobs:
           if old not in text:
               raise SystemExit('jar block marker not found')
           text = text.replace(old, new, 1)
-          text = text.replace(
-              'jvmArgs "-Dmixin.debug.verbose=true", "-Dmixin.debug.export=true"',
-              'jvmArgs "-Dmixin.debug.verbose=true", "-Dmixin.debug.export=true", "-DLWJGL_DISABLE_XRANDR=true", "-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true"'
-          )
           gradle.write_text(text)
           PY
 
@@ -76,9 +72,59 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xserver-xorg-video-dummy x11-xserver-utils mesa-utils
+
+          cat > /tmp/xorg-dummy.conf <<'EOF'
+          Section "ServerFlags"
+              Option "DontVTSwitch" "true"
+              Option "AllowMouseOpenFail" "true"
+              Option "PciForceNone" "true"
+          EndSection
+
+          Section "Device"
+              Identifier "DummyDevice"
+              Driver "dummy"
+              VideoRam 256000
+          EndSection
+
+          Section "Monitor"
+              Identifier "DummyMonitor"
+              HorizSync 5.0-1000.0
+              VertRefresh 5.0-200.0
+              Modeline "1280x720" 74.50 1280 1344 1472 1664 720 723 728 748
+          EndSection
+
+          Section "Screen"
+              Identifier "DummyScreen"
+              Device "DummyDevice"
+              Monitor "DummyMonitor"
+              DefaultDepth 24
+              SubSection "Display"
+                  Depth 24
+                  Modes "1280x720"
+                  Virtual 1280 720
+              EndSubSection
+          EndSection
+          EOF
+
+          sudo Xorg :99 -noreset -ac +extension GLX +extension RANDR -config /tmp/xorg-dummy.conf > /tmp/xorg.log 2>&1 &
+          xorg_pid=$!
+          sleep 4
+          export DISPLAY=:99
+
+          echo '=== XRANDR ==='
+          xrandr -q || true
+          echo '=== GLX ==='
+          glxinfo -B || true
+
           set +e
-          timeout 180s xvfb-run -a -s '-screen 0 1280x720x24 -ac +extension GLX +extension RANDR +render -noreset' ./gradlew --no-daemon --console=plain runClient > runtime.log 2>&1
+          timeout 180s ./gradlew --no-daemon --console=plain runClient > runtime.log 2>&1
           status=$?
+          sudo kill "$xorg_pid" 2>/dev/null || true
+
+          echo '=== XORG LOG TAIL ==='
+          tail -n 120 /tmp/xorg.log || true
           echo '=== RUNTIME LOG TAIL ==='
           tail -n 250 runtime.log
           if [ -f run/logs/latest.log ]; then
@@ -105,5 +151,6 @@ jobs:
             ${{ runner.temp }}/Oculus/oculus-1.12.2/runtime.log
             ${{ runner.temp }}/Oculus/oculus-1.12.2/run/logs/latest.log
             ${{ runner.temp }}/Oculus/oculus-1.12.2/run/crash-reports/*.txt
+            /tmp/xorg.log
           if-no-files-found: warn
           retention-days: 1
