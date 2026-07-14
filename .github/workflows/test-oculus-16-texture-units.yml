@@ -1,0 +1,399 @@
+name: Temporary Oculus 16 Texture Unit Test
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+    branches: [1.16.X-dev]
+  workflow_dispatch:
+
+jobs:
+  test-oculus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Clone Oculus source
+        run: git clone --depth 1 --branch 1.12.2-dev https://github.com/dabrelity1/Oculus.git "$RUNNER_TEMP/Oculus"
+
+      - name: Apply production and 16-unit fixes
+        working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Relictium 1.2.0 world-load LVT compatibility.
+          mixin = Path('src/main/java/net/oculus/mixin/pipeline/ChunkOneshotGraphicsStateMixin.java')
+          text = mixin.read_text()
+          old = 'private void oculus$captureVertexFormat(CommandList commandList, ChunkMeshData meshData, CallbackInfo ci, VertexData vertexData, GlVertexFormat<ChunkMeshAttribute> vertexFormat, TessellationBinding[] bindings, GlMutableBuffer vertexBuffer)'
+          new = 'private void oculus$captureVertexFormat(CommandList commandList, ChunkMeshData meshData, CallbackInfo ci, VertexData vertexData, GlVertexFormat<ChunkMeshAttribute> vertexFormat)'
+          if old in text:
+              text = text.replace(old, new, 1)
+              text = text.replace('import me.jellysquid.mods.sodium.client.gl.buffer.GlMutableBuffer;\n', '')
+              mixin.write_text(text)
+          elif new not in text:
+              raise SystemExit('Unexpected ChunkOneshot callback signature')
+
+          # Prefer texture units 16+ like Iris, but fall back to any free low unit on
+          # OpenGL implementations such as Apple that expose exactly 16 units.
+          samplers = Path('src/main/java/net/oculus/gl/program/ProgramSamplers.java')
+          text = samplers.read_text()
+          old = '''        private int allocateDynamicUnit(String samplerName, TextureBinding binding) {
+            int unit = ProgramSamplers.nextAvailableTextureUnit(
+                Math.max(highestUnit + 1, FIRST_DYNAMIC_TEXTURE_UNIT),
+                maxTextureUnits,
+                unitBindings.keySet(),
+                reservedTextureUnits);
+            if (unit < 0) {
+'''
+          new = '''        private int allocateDynamicUnit(String samplerName, TextureBinding binding) {
+            int preferredStart = Math.max(highestUnit + 1, FIRST_DYNAMIC_TEXTURE_UNIT);
+            int unit = ProgramSamplers.nextAvailableTextureUnit(
+                preferredStart,
+                maxTextureUnits,
+                unitBindings.keySet(),
+                reservedTextureUnits);
+            if (unit < 0 && preferredStart > 0) {
+                unit = ProgramSamplers.nextAvailableTextureUnit(
+                    0,
+                    maxTextureUnits,
+                    unitBindings.keySet(),
+                    reservedTextureUnits);
+            }
+            if (unit < 0) {
+'''
+          if old not in text:
+              raise SystemExit('allocateDynamicUnit source block not found')
+          samplers.write_text(text.replace(old, new, 1))
+
+          # Validation-only property. Without the property, the real GL limit is used.
+          limits = Path('src/main/java/net/oculus/gl/sampler/SamplerLimits.java')
+          text = limits.read_text()
+          old = '''    private SamplerLimits() {
+        this.maxTextureUnits = GL11.glGetInteger(GL20.GL_MAX_TEXTURE_IMAGE_UNITS);
+        this.maxDrawBuffers = GL11.glGetInteger(GL20.GL_MAX_DRAW_BUFFERS);
+    }
+'''
+          new = '''    private SamplerLimits() {
+        int hardwareTextureUnits = GL11.glGetInteger(GL20.GL_MAX_TEXTURE_IMAGE_UNITS);
+        int configuredTextureUnits = Integer.getInteger("oculus.validation.maxTextureUnits", hardwareTextureUnits);
+        this.maxTextureUnits = Math.max(1, Math.min(hardwareTextureUnits, configuredTextureUnits));
+        this.maxDrawBuffers = GL11.glGetInteger(GL20.GL_MAX_DRAW_BUFFERS);
+    }
+'''
+          if old not in text:
+              raise SystemExit('SamplerLimits constructor not found')
+          limits.write_text(text.replace(old, new, 1))
+
+          # Embed jcpp, which is required when a shader pack is selected.
+          build = Path('build.gradle')
+          gradle = build.read_text()
+          if 'configurations { oculusEmbed }' not in gradle:
+              gradle = gradle.replace('dependencies {\n', 'configurations { oculusEmbed }\n\ndependencies {\n', 1)
+              gradle = gradle.replace(
+                  '    testCompile "junit:junit:4.13.2"\n',
+                  '    testCompile "junit:junit:4.13.2"\n    oculusEmbed("org.anarres:jcpp:1.4.14") { transitive = false }\n    oculusEmbed("org.slf4j:slf4j-api:1.7.12") { transitive = false }\n',
+                  1)
+              gradle = gradle.replace(
+                  'jar {\n',
+                  'jar {\n    duplicatesStrategy = DuplicatesStrategy.EXCLUDE\n    from { configurations.oculusEmbed.collect { zipTree(it) } }\n    exclude "META-INF/*.SF", "META-INF/*.RSA", "META-INF/*.DSA"\n',
+                  1)
+              build.write_text(gradle)
+
+          # Add a targeted regression test for the exact Apple GL limit.
+          test = Path('src/test/java/net/oculus/gl/program/ProgramSamplersAppleLimitTest.java')
+          test.parent.mkdir(parents=True, exist_ok=True)
+          test.write_text('''package net.oculus.gl.program;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+import java.lang.reflect.Field;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.ToIntBiFunction;
+
+import org.junit.Test;
+
+public class ProgramSamplersAppleLimitTest {
+    @Test
+    public void centerDepthDynamicSamplersFitWithinSixteenUnits() throws Exception {
+        ToIntBiFunction<Integer, String> uniforms = (program, name) -> {
+            if ("depth".equals(name)) return 1;
+            if ("altDepth".equals(name)) return 2;
+            return -1;
+        };
+        ProgramSamplers.Builder builder = ProgramSamplers.builder(
+            "centerDepthSmooth",
+            7,
+            SamplerOverrideMap.empty(),
+            new HashSet<Integer>(Arrays.asList(0, 1, 2)),
+            () -> 16,
+            uniforms);
+
+        builder.addDynamicSampler(() -> 101, "depth");
+        builder.addDynamicSampler(() -> 102, "altDepth");
+
+        Field field = ProgramSamplers.Builder.class.getDeclaredField("unitBindings");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<Integer, ?> units = (Map<Integer, ?>) field.get(builder);
+        assertEquals(2, units.size());
+        assertTrue(units.containsKey(3));
+        assertTrue(units.containsKey(4));
+    }
+}
+''')
+          PY
+
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Run targeted regression test
+        working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --console=plain test --tests net.oculus.gl.program.ProgramSamplersAppleLimitTest
+
+      - name: Build production JAR
+        working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
+        run: |
+          ./gradlew --no-daemon --console=plain build -x test -x compileTestJava
+          jar tf build/libs/oculus-0.1.0.jar | grep 'org/anarres/cpp/PreprocessorListener.class'
+          javap -classpath build/libs/oculus-0.1.0.jar -c -p 'net.oculus.gl.program.ProgramSamplers$Builder' > builder.javap.txt
+          grep -A45 'allocateDynamicUnit' builder.javap.txt
+          tar -czf patched-source.tar.gz src/main/java src/main/resources src/test/java build.gradle
+
+      - name: Assemble Forge client and local server
+        env:
+          MC_DIR: ${{ runner.temp }}/minecraft-16unit-test
+          SERVER_DIR: ${{ runner.temp }}/vanilla-server
+          OCULUS_JAR: ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
+        run: |
+          python3 -m pip install --quiet minecraft-launcher-lib
+          python3 - <<'PY'
+          import json, os, pathlib, shutil, urllib.request, zipfile
+          import minecraft_launcher_lib
+
+          def download(url, path):
+              path = pathlib.Path(path)
+              path.parent.mkdir(parents=True, exist_ok=True)
+              req = urllib.request.Request(url, headers={'User-Agent': 'Oculus 16-unit validation'})
+              with urllib.request.urlopen(req, timeout=180) as response, path.open('wb') as output:
+                  shutil.copyfileobj(response, output)
+
+          mc = pathlib.Path(os.environ['MC_DIR'])
+          server = pathlib.Path(os.environ['SERVER_DIR'])
+          mc.mkdir(parents=True, exist_ok=True)
+          server.mkdir(parents=True, exist_ok=True)
+          java = os.path.join(os.environ['JAVA_HOME'], 'bin', 'java')
+          forge = '1.12.2-14.23.5.2768'
+
+          minecraft_launcher_lib.install.install_minecraft_version('1.12.2', str(mc))
+          installer = mc / 'forge-installer.jar'
+          download(f'https://maven.minecraftforge.net/net/minecraftforge/forge/{forge}/forge-{forge}-installer.jar', installer)
+          with zipfile.ZipFile(installer) as archive:
+              info = json.loads(archive.read('install_profile.json'))['versionInfo']
+              version_id = info['id']
+              version_dir = mc / 'versions' / version_id
+              version_dir.mkdir(parents=True, exist_ok=True)
+              (version_dir / f'{version_id}.json').write_text(json.dumps(info, indent=2))
+              shutil.copy2(mc / 'versions/1.12.2/1.12.2.jar', version_dir / f'{version_id}.jar')
+              forge_jar = mc / 'libraries/net/minecraftforge/forge' / forge / f'forge-{forge}.jar'
+              forge_jar.parent.mkdir(parents=True, exist_ok=True)
+              with archive.open(f'forge-{forge}-universal.jar') as source, forge_jar.open('wb') as target:
+                  shutil.copyfileobj(source, target)
+          minecraft_launcher_lib.install.install_minecraft_version(version_id, str(mc))
+
+          mods = mc / 'mods'
+          mods.mkdir(exist_ok=True)
+          shutil.copy2(os.environ['OCULUS_JAR'], mods / 'oculus-0.1.0-apple-16unit-fixed.jar')
+          download('https://repo.cleanroommc.com/releases/zone/rong/mixinbooter/11.5/mixinbooter-11.5.jar', mods / '-mixinbooter-11.5.jar')
+          download('https://api.modrinth.com/maven/maven/modrinth/relictium/1.2.0/relictium-1.2.0.jar', mods / 'relictium-1.2.0.jar')
+
+          shaders = mc / 'shaderpacks' / 'CenterDepth16Test' / 'shaders'
+          shaders.mkdir(parents=True, exist_ok=True)
+          vertex = '''#version 120
+varying vec2 texcoord;
+varying vec2 lmcoord;
+varying vec4 vcolor;
+void main() {
+    gl_Position = ftransform();
+    texcoord = (gl_TextureMatrix[0] * gl_MultiTexCoord0).xy;
+    lmcoord = (gl_TextureMatrix[1] * gl_MultiTexCoord1).xy;
+    vcolor = gl_Color;
+}
+'''
+          fragment = '''#version 120
+uniform sampler2D texture;
+uniform sampler2D lightmap;
+varying vec2 texcoord;
+varying vec2 lmcoord;
+varying vec4 vcolor;
+/* DRAWBUFFERS:0 */
+void main() {
+    vec4 base = texture2D(texture, texcoord) * vcolor;
+    vec3 light = texture2D(lightmap, lmcoord).rgb;
+    gl_FragData[0] = vec4(base.rgb * max(light, vec3(0.18)), base.a);
+}
+'''
+          basic_fragment = '''#version 120
+varying vec4 vcolor;
+/* DRAWBUFFERS:0 */
+void main() { gl_FragData[0] = vcolor; }
+'''
+          final_vertex = '''#version 120
+varying vec2 texcoord;
+void main() {
+    gl_Position = ftransform();
+    texcoord = gl_MultiTexCoord0.xy;
+}
+'''
+          final_fragment = '''#version 120
+uniform sampler2D colortex0;
+uniform float centerDepthSmooth;
+varying vec2 texcoord;
+void main() {
+    vec3 color = texture2D(colortex0, texcoord).rgb;
+    float focus = clamp(centerDepthSmooth, 0.0, 1.0);
+    gl_FragColor = vec4(color * (0.98 + focus * 0.02), 1.0);
+}
+'''
+          programs = ['gbuffers_textured', 'gbuffers_textured_lit', 'gbuffers_terrain', 'gbuffers_water', 'gbuffers_entities', 'gbuffers_block', 'gbuffers_hand', 'gbuffers_weather', 'gbuffers_skytextured']
+          for name in programs:
+              (shaders / f'{name}.vsh').write_text(vertex)
+              (shaders / f'{name}.fsh').write_text(fragment)
+          (shaders / 'gbuffers_basic.vsh').write_text(vertex)
+          (shaders / 'gbuffers_basic.fsh').write_text(basic_fragment)
+          (shaders / 'final.vsh').write_text(final_vertex)
+          (shaders / 'final.fsh').write_text(final_fragment)
+          (shaders / 'shaders.properties').write_text('oldLighting=true\n')
+          (mc / 'oculus.properties').write_text(
+              'selectedPackName=CenterDepth16Test\n'
+              'shaderPack=CenterDepth16Test\n'
+              'shadersEnabled=true\n'
+              'enableShaders=true\n')
+
+          options = minecraft_launcher_lib.utils.generate_test_options()
+          options.update({
+              'username': 'Oculus16UnitTest',
+              'uuid': '00000000-0000-0000-0000-000000000016',
+              'token': '0',
+              'executablePath': java,
+              'defaultExecutablePath': java,
+              'gameDirectory': str(mc),
+              'customResolution': True,
+              'resolutionWidth': '1280',
+              'resolutionHeight': '720',
+              'jvmArguments': [
+                  '-Xms512m', '-Xmx3G', '-Duser.language=en',
+                  '-Doculus.validation.maxTextureUnits=16'
+              ]
+          })
+          command = minecraft_launcher_lib.command.get_minecraft_command(version_id, str(mc), options)
+          command.extend(['--server', '127.0.0.1', '--port', '25565'])
+          (mc / 'launch-command.json').write_text(json.dumps(command))
+
+          manifest = json.loads(urllib.request.urlopen('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json').read())
+          version_url = next(version['url'] for version in manifest['versions'] if version['id'] == '1.12.2')
+          version_json = json.loads(urllib.request.urlopen(version_url).read())
+          download(version_json['downloads']['server']['url'], server / 'server.jar')
+          (server / 'eula.txt').write_text('eula=true\n')
+          (server / 'server.properties').write_text('online-mode=false\nserver-port=25565\nview-distance=6\nspawn-protection=0\n')
+          PY
+
+      - name: Start local server
+        env:
+          SERVER_DIR: ${{ runner.temp }}/vanilla-server
+        run: |
+          cd "$SERVER_DIR"
+          java -Xms512m -Xmx1G -jar server.jar nogui > server.log 2>&1 &
+          echo $! > server.pid
+          for attempt in $(seq 1 90); do
+            grep -q 'Done (' server.log && exit 0
+            kill -0 "$(cat server.pid)" 2>/dev/null || { cat server.log; exit 1; }
+            sleep 1
+          done
+          cat server.log
+          exit 1
+
+      - name: Run world with center-depth shaders and a 16-unit limit
+        env:
+          MC_DIR: ${{ runner.temp }}/minecraft-16unit-test
+          SERVER_DIR: ${{ runner.temp }}/vanilla-server
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb mesa-utils imagemagick
+          Xvfb :99 -screen 0 1280x720x24 +extension GLX +render -noreset > /tmp/xvfb.log 2>&1 &
+          xvfb_pid=$!
+          export DISPLAY=:99
+          sleep 3
+          glxinfo -B || true
+
+          python3 - <<'PY'
+          import json, os, pathlib, shlex
+          mc = pathlib.Path(os.environ['MC_DIR'])
+          command = json.loads((mc / 'launch-command.json').read_text())
+          (mc / 'run.sh').write_text('#!/bin/sh\nexec ' + ' '.join(shlex.quote(arg) for arg in command) + '\n')
+          os.chmod(mc / 'run.sh', 0o755)
+          PY
+
+          set +e
+          timeout 180s "$MC_DIR/run.sh" > "$MC_DIR/runtime.log" 2>&1 &
+          client_pid=$!
+          pipeline_seen=0
+          for attempt in $(seq 1 150); do
+            if grep -q 'Creating pipeline for dimension minecraft:overworld: ShaderWorldRenderingPipeline' "$MC_DIR/runtime.log" "$MC_DIR/logs/latest.log" 2>/dev/null; then
+              pipeline_seen=1
+              sleep 20
+              import -display :99 -window root "$MC_DIR/center-depth-16unit.png" || true
+              break
+            fi
+            kill -0 "$client_pid" 2>/dev/null || break
+            sleep 1
+          done
+          wait "$client_pid"
+          status=$?
+          kill "$(cat "$SERVER_DIR/server.pid")" 2>/dev/null || true
+          kill "$xvfb_pid" 2>/dev/null || true
+
+          echo '=== CLIENT RUNTIME ==='
+          tail -n 1500 "$MC_DIR/runtime.log"
+          test -f "$MC_DIR/logs/latest.log" && tail -n 1500 "$MC_DIR/logs/latest.log"
+          echo '=== SERVER ==='
+          tail -n 300 "$SERVER_DIR/server.log"
+
+          test "$pipeline_seen" -eq 1
+          grep -q 'Oculus16UnitTest.*joined the game' "$SERVER_DIR/server.log"
+          grep -q 'Creating pipeline for dimension minecraft:overworld: ShaderWorldRenderingPipeline' "$MC_DIR/runtime.log" "$MC_DIR/logs/latest.log"
+          ! grep -q 'No more available texture units' "$MC_DIR/runtime.log" "$MC_DIR/logs/latest.log"
+          ! grep -q 'Failed to create shader rendering pipeline' "$MC_DIR/runtime.log" "$MC_DIR/logs/latest.log"
+          ! grep -q 'Game crashed' "$MC_DIR/runtime.log" "$MC_DIR/logs/latest.log"
+          test -s "$MC_DIR/center-depth-16unit.png"
+          test "$status" -eq 124
+
+      - name: Upload fixed JAR and validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oculus-1.12.2-apple-16unit-fixed
+          path: |
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/build/test-results/test/*.xml
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/patched-source.tar.gz
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/builder.javap.txt
+            ${{ runner.temp }}/minecraft-16unit-test/runtime.log
+            ${{ runner.temp }}/minecraft-16unit-test/logs/latest.log
+            ${{ runner.temp }}/minecraft-16unit-test/center-depth-16unit.png
+            ${{ runner.temp }}/minecraft-16unit-test/crash-reports/*.txt
+            ${{ runner.temp }}/vanilla-server/server.log
+            /tmp/xvfb.log
+          if-no-files-found: warn
+          retention-days: 1
