@@ -1,0 +1,48 @@
+name: Scheduled Temporary Oculus Shader Dispatch
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop if this validation was already dispatched
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          comments=$(gh api "repos/$GITHUB_REPOSITORY/issues/1/comments" --paginate --jq '.[].body')
+          if printf '%s\n' "$comments" | grep -q '^OCULUS_SHADER_SCHEDULED_RUN_ID='; then
+            echo 'Already dispatched.'
+            exit 0
+          fi
+
+      - name: Dispatch shader validation and report run ID
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          before=$(date -u +%s)
+          gh workflow run test-oculus-real-shaders.yml --repo "$GITHUB_REPOSITORY" --ref 1.16.X-dev
+          run_id=""
+          for attempt in $(seq 1 60); do
+            candidate=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow test-oculus-real-shaders.yml --event workflow_dispatch --limit 1 --json databaseId,createdAt --jq '.[0] | [.databaseId, .createdAt] | @tsv' 2>/dev/null || true)
+            if [ -n "$candidate" ]; then
+              candidate_id=$(printf '%s' "$candidate" | cut -f1)
+              candidate_time=$(printf '%s' "$candidate" | cut -f2)
+              candidate_epoch=$(date -u -d "$candidate_time" +%s 2>/dev/null || echo 0)
+              if [ "$candidate_epoch" -ge "$before" ]; then
+                run_id="$candidate_id"
+                break
+              fi
+            fi
+            sleep 2
+          done
+          test -n "$run_id"
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY" --body "OCULUS_SHADER_SCHEDULED_RUN_ID=$run_id"
