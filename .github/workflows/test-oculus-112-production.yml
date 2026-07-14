@@ -25,18 +25,32 @@ jobs:
               'def outRefmapFile = file("${buildDir}/resources/main/oculus.refmap.json")',
               'def outRefmapFile = file("${buildDir}/generated/mixins/oculus.refmap.json")'
           )
-          marker = '''jar {
+
+          jar_marker = '''jar {
               manifest {'''
-          replacement = '''jar {
+          jar_replacement = '''jar {
               dependsOn compileJava
               from(outRefmapFile) {
                   into ""
               }
 
               manifest {'''
-          if marker not in text:
+          if jar_marker not in text:
               raise SystemExit('JAR block marker not found')
-          gradle.write_text(text.replace(marker, replacement, 1))
+          text = text.replace(jar_marker, jar_replacement, 1)
+
+          process_marker = '''processResources {'''
+          reobf_block = '''reobf {
+              jar {
+                  extraFiles outSrgFile
+              }
+          }
+
+          processResources {'''
+          if process_marker not in text:
+              raise SystemExit('processResources marker not found')
+          text = text.replace(process_marker, reobf_block, 1)
+          gradle.write_text(text)
 
           Path('src/main/java/net/oculus/mixin/pipeline/BlockStateAmbientOcclusionMixin.java').write_text('''package net.oculus.mixin.pipeline;
 
@@ -119,7 +133,7 @@ jobs:
             echo "=== BUILD ATTEMPT $attempt ==="
             ./gradlew --no-daemon --console=plain build -x test -x compileTestJava > build.log 2>&1
             status=$?
-            tail -n 220 build.log
+            tail -n 240 build.log
             if [ "$status" -eq 0 ]; then
               break
             fi
@@ -128,6 +142,24 @@ jobs:
           if [ "$status" -ne 0 ]; then
             exit "$status"
           fi
+
+          test -s build/tmp/compileJava/mcp-srg.srg
+          echo '=== GENERATED SHADOW SRG SAMPLE ==='
+          grep -E 'renderDistanceChunks|activeTextureUnit|languageList' build/tmp/compileJava/mcp-srg.srg || true
+
+          echo '=== REOBFUSCATED MIXIN MEMBERS ==='
+          javap -private -classpath build/libs/oculus-0.1.0.jar net.oculus.mixin.pipeline.GameSettingsCloudsMixin
+          javap -private -classpath build/libs/oculus-0.1.0.jar net.oculus.mixin.pipeline.GlStateManagerStateMixin
+
+          if javap -private -classpath build/libs/oculus-0.1.0.jar net.oculus.mixin.pipeline.GameSettingsCloudsMixin | grep -q renderDistanceChunks; then
+            echo 'GameSettings shadow was not reobfuscated'
+            exit 1
+          fi
+          if javap -private -classpath build/libs/oculus-0.1.0.jar net.oculus.mixin.pipeline.GlStateManagerStateMixin | grep -q activeTextureUnit; then
+            echo 'GlStateManager shadow was not reobfuscated'
+            exit 1
+          fi
+
           jar tf build/libs/oculus-0.1.0.jar | grep -E 'oculus.refmap.json|BlockStateAmbientOcclusionMixin.class|TextLanguageMapMixin.class'
           unzip -p build/libs/oculus-0.1.0.jar oculus.refmap.json | grep -E 'getAmbientOcclusionLightValue|translateKey' | head -n 20
           tar -czf patched-source.tar.gz src/main/java src/main/resources build.gradle
@@ -257,10 +289,10 @@ jobs:
           sudo kill "$xorg_pid" 2>/dev/null || true
 
           echo '=== PRODUCTION RUNTIME LOG ==='
-          tail -n 600 "$MC_DIR/production-runtime.log"
+          tail -n 700 "$MC_DIR/production-runtime.log"
           if [ -f "$MC_DIR/logs/latest.log" ]; then
             echo '=== LATEST.LOG ==='
-            tail -n 600 "$MC_DIR/logs/latest.log"
+            tail -n 700 "$MC_DIR/logs/latest.log"
           fi
 
           fatal='Mixin apply.*failed|InvalidInjectionException|InvalidMixinException|MixinTransformerError|Unable to launch|Exception in thread "(main|Client thread)"|A fatal error has been detected'
@@ -281,6 +313,7 @@ jobs:
           path: |
             ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
             ${{ runner.temp }}/Oculus/oculus-1.12.2/build.log
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/build/tmp/compileJava/mcp-srg.srg
             ${{ runner.temp }}/Oculus/oculus-1.12.2/patched-source.tar.gz
             ${{ runner.temp }}/install.log
             ${{ runner.temp }}/minecraft-production/production-runtime.log
