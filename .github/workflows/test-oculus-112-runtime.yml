@@ -69,9 +69,11 @@ jobs:
 
       - name: Smoke-test Forge client startup
         working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
           set +e
-          timeout 180s xvfb-run -a ./gradlew --no-daemon --console=plain runClient > runtime.log 2>&1
+          timeout 180s xvfb-run -a -s '-screen 0 1280x720x24 -ac +extension GLX +extension RANDR +render -noreset' ./gradlew --no-daemon --console=plain runClient > runtime.log 2>&1
           status=$?
           echo '=== RUNTIME LOG TAIL ==='
           tail -n 250 runtime.log
@@ -98,5 +100,6 @@ jobs:
             ${{ runner.temp }}/Oculus/oculus-1.12.2/build.log
             ${{ runner.temp }}/Oculus/oculus-1.12.2/runtime.log
             ${{ runner.temp }}/Oculus/oculus-1.12.2/run/logs/latest.log
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/run/crash-reports/*.txt
           if-no-files-found: warn
           retention-days: 1
