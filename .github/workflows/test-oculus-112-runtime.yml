@@ -17,7 +17,7 @@ jobs:
       - name: Clone Oculus
         run: git clone --depth 1 --branch 1.12.2-dev https://github.com/dabrelity1/Oculus.git "$RUNNER_TEMP/Oculus"
 
-      - name: Patch refmap packaging and shutdown target
+      - name: Patch refmap packaging
         working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
         run: |
           python3 - <<'PY'
@@ -42,14 +42,6 @@ jobs:
               raise SystemExit('jar block marker not found')
           text = text.replace(old, new, 1)
           gradle.write_text(text)
-
-          mixin = Path('src/main/java/net/oculus/mixin/pipeline/MinecraftPBRShutdownMixin.java')
-          text = mixin.read_text()
-          text = text.replace(
-              'method = "shutdownMinecraftApplet()V",',
-              'method = {"shutdownMinecraftApplet()V", "func_71405_e()V"},'
-          )
-          mixin.write_text(text)
           PY
 
       - name: Set up Java 8
@@ -62,9 +54,18 @@ jobs:
         working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon --console=plain build -x test -x compileTestJava
+          set +e
+          ./gradlew --no-daemon --console=plain build -x test -x compileTestJava --stacktrace > build.log 2>&1
+          status=$?
+          echo '=== BUILD LOG TAIL ==='
+          tail -n 250 build.log
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
           echo '=== JAR CONTENT CHECK ==='
           jar tf build/libs/oculus-0.1.0.jar | grep -E 'oculus.refmap.json|MinecraftPBRShutdownMixin.class'
+          echo '=== REFMAP SHUTDOWN ENTRY ==='
+          unzip -p build/libs/oculus-0.1.0.jar oculus.refmap.json | grep -o 'shutdownMinecraftApplet[^,}]*' | head -n 5 || true
 
       - name: Smoke-test Forge client startup
         working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
@@ -94,6 +95,7 @@ jobs:
           name: Oculus-1.12.2-runtime-test
           path: |
             ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/*.jar
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/build.log
             ${{ runner.temp }}/Oculus/oculus-1.12.2/runtime.log
             ${{ runner.temp }}/Oculus/oculus-1.12.2/run/logs/latest.log
           if-no-files-found: warn
