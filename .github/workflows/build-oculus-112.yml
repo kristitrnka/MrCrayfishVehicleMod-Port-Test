@@ -27,7 +27,12 @@ jobs:
         working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon build --stacktrace
+          set +e
+          ./gradlew --no-daemon --console=plain build --stacktrace > build-output.log 2>&1
+          status=$?
+          echo '========== GRADLE OUTPUT TAIL =========='
+          tail -n 200 build-output.log
+          exit $status
 
       - name: List build outputs
         if: always()
