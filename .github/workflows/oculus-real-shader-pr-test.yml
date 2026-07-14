@@ -32,13 +32,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL 'https://raw.githubusercontent.com/kristitrnka/MrCrayfishVehicleMod-Port-Test/10c19389be657a3f5a24f5339b820b55d861bd2b/.github/scripts/oculus-real-shader-test.sh' -o /tmp/oculus-real-shader-test.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/oculus-real-shader-test.sh')
+          text = path.read_text()
+          old_anchor = "    jar_anchor = 'jar {\\n'"
+          new_anchor = "    jar_anchor = '\\njar {\\n    dependsOn compileJava\\n'"
+          old_replacement = "        'jar {\\n'\n        '    duplicatesStrategy = DuplicatesStrategy.EXCLUDE\\n'"
+          new_replacement = "        '\\njar {\\n'\n        '    dependsOn compileJava\\n'\n        '    duplicatesStrategy = DuplicatesStrategy.EXCLUDE\\n'"
+          if old_anchor not in text or old_replacement not in text:
+              raise SystemExit('Unable to patch the fat-JAR task anchor')
+          text = text.replace(old_anchor, new_anchor, 1)
+          text = text.replace(old_replacement, new_replacement, 1)
+          path.write_text(text)
+          PY
           chmod +x /tmp/oculus-real-shader-test.sh
           set +e
           /tmp/oculus-real-shader-test.sh > "$RUNNER_TEMP/oculus-validation-full.log" 2>&1
           status=$?
           printf '%s\n' "$status" > "$RUNNER_TEMP/oculus-validation-exit-code.txt"
           echo '=== VALIDATION LOG TAIL ==='
-          tail -n 180 "$RUNNER_TEMP/oculus-validation-full.log"
+          tail -n 220 "$RUNNER_TEMP/oculus-validation-full.log"
           exit "$status"
 
       - name: Upload validation diagnostics
@@ -52,6 +66,7 @@ jobs:
             ${{ runner.temp }}/oculus-validation-results/**
             ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
             ${{ runner.temp }}/Oculus/oculus-1.12.2/build.log
+            ${{ runner.temp }}/install.log
             ${{ runner.temp }}/minecraft-shader-test/shader-runtime.log
             ${{ runner.temp }}/minecraft-shader-test/logs/latest.log
             ${{ runner.temp }}/minecraft-shader-test/screenshots/*.png
