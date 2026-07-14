@@ -1,0 +1,196 @@
+name: Temporary Oculus 1.12.2 Production Test v2
+
+on:
+  push:
+    branches: [automation/build-oculus-112]
+  pull_request:
+    branches: [1.16.X-dev]
+  workflow_dispatch:
+
+jobs:
+  production-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download patched Oculus JAR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 29324905811 --repo "$GITHUB_REPOSITORY" \
+            --name Oculus-1.12.2-real-production-test --dir "$RUNNER_TEMP/source"
+          jar_path=$(find "$RUNNER_TEMP/source" -name 'oculus-0.1.0.jar' -type f | head -n 1)
+          test -n "$jar_path"
+          cp "$jar_path" "$RUNNER_TEMP/oculus-0.1.0.jar"
+          jar tf "$RUNNER_TEMP/oculus-0.1.0.jar" | grep -E 'oculus.refmap.json|BlockStateAmbientOcclusionMixin.class'
+
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Assemble real Forge installation
+        env:
+          MC_DIR: ${{ runner.temp }}/minecraft-production
+          OCULUS_JAR: ${{ runner.temp }}/oculus-0.1.0.jar
+        run: |
+          python3 -m pip install --quiet minecraft-launcher-lib
+          python3 - <<'PY' > "$RUNNER_TEMP/install.log" 2>&1
+          import json, os, pathlib, shutil, urllib.request, zipfile
+          import minecraft_launcher_lib
+
+          def download(url, path):
+              path = pathlib.Path(path)
+              path.parent.mkdir(parents=True, exist_ok=True)
+              print('Downloading:', url)
+              req = urllib.request.Request(url, headers={
+                  'User-Agent': 'Mozilla/5.0 Oculus production test',
+                  'Accept': '*/*'
+              })
+              with urllib.request.urlopen(req, timeout=180) as response, path.open('wb') as output:
+                  shutil.copyfileobj(response, output)
+
+          mc = pathlib.Path(os.environ['MC_DIR'])
+          mc.mkdir(parents=True, exist_ok=True)
+          java = os.path.join(os.environ['JAVA_HOME'], 'bin', 'java')
+          forge = '1.12.2-14.23.5.2768'
+
+          minecraft_launcher_lib.install.install_minecraft_version('1.12.2', str(mc))
+          installer = mc / 'forge-installer.jar'
+          download(f'https://maven.minecraftforge.net/net/minecraftforge/forge/{forge}/forge-{forge}-installer.jar', installer)
+
+          with zipfile.ZipFile(installer) as archive:
+              profile = json.loads(archive.read('install_profile.json'))
+              info = profile['versionInfo']
+              version_id = info['id']
+              version_dir = mc / 'versions' / version_id
+              version_dir.mkdir(parents=True, exist_ok=True)
+              (version_dir / f'{version_id}.json').write_text(json.dumps(info, indent=2))
+              shutil.copy2(mc / 'versions/1.12.2/1.12.2.jar', version_dir / f'{version_id}.jar')
+
+              forge_jar = mc / 'libraries/net/minecraftforge/forge' / forge / f'forge-{forge}.jar'
+              forge_jar.parent.mkdir(parents=True, exist_ok=True)
+              entry = f'forge-{forge}-universal.jar'
+              print('Extracting', entry, 'as classpath library', forge_jar)
+              with archive.open(entry) as source, forge_jar.open('wb') as output:
+                  shutil.copyfileobj(source, output)
+
+          minecraft_launcher_lib.install.install_minecraft_version(version_id, str(mc))
+
+          mods = mc / 'mods'
+          mods.mkdir(exist_ok=True)
+          shutil.copy2(os.environ['OCULUS_JAR'], mods / 'oculus-0.1.0-production-test.jar')
+          download('https://repo.cleanroommc.com/releases/zone/rong/mixinbooter/11.5/mixinbooter-11.5.jar', mods / '-mixinbooter-11.5.jar')
+          download('https://api.modrinth.com/maven/maven/modrinth/relictium/1.2.0/relictium-1.2.0.jar', mods / 'relictium-1.2.0.jar')
+
+          options = minecraft_launcher_lib.utils.generate_test_options()
+          options.update({
+              'executablePath': java,
+              'defaultExecutablePath': java,
+              'gameDirectory': str(mc),
+              'customResolution': True,
+              'resolutionWidth': '1280',
+              'resolutionHeight': '720',
+              'jvmArguments': ['-Xms512m', '-Xmx3G', '-Duser.language=en']
+          })
+          command = minecraft_launcher_lib.command.get_minecraft_command(version_id, str(mc), options)
+          (mc / 'launch-command.json').write_text(json.dumps(command))
+          print('Version:', version_id)
+          print('Forge library exists:', forge_jar, forge_jar.exists(), forge_jar.stat().st_size)
+          print('Mods:', sorted(p.name for p in mods.iterdir()))
+          PY
+          status=$?
+          echo '=== INSTALL LOG ==='
+          tail -n 350 "$RUNNER_TEMP/install.log"
+          exit "$status"
+
+      - name: Run real obfuscated Forge client
+        env:
+          MC_DIR: ${{ runner.temp }}/minecraft-production
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xserver-xorg-video-dummy x11-xserver-utils mesa-utils
+          cat > /tmp/xorg-dummy.conf <<'EOF'
+          Section "ServerFlags"
+              Option "DontVTSwitch" "true"
+              Option "AllowMouseOpenFail" "true"
+              Option "PciForceNone" "true"
+          EndSection
+          Section "Device"
+              Identifier "DummyDevice"
+              Driver "dummy"
+              VideoRam 256000
+          EndSection
+          Section "Monitor"
+              Identifier "DummyMonitor"
+              HorizSync 5.0-1000.0
+              VertRefresh 5.0-200.0
+              Modeline "1280x720" 74.50 1280 1344 1472 1664 720 723 728 748
+          EndSection
+          Section "Screen"
+              Identifier "DummyScreen"
+              Device "DummyDevice"
+              Monitor "DummyMonitor"
+              DefaultDepth 24
+              SubSection "Display"
+                  Depth 24
+                  Modes "1280x720"
+                  Virtual 1280 720
+              EndSubSection
+          EndSection
+          EOF
+          sudo Xorg :99 -noreset -ac +extension GLX +extension RANDR -config /tmp/xorg-dummy.conf > /tmp/xorg.log 2>&1 &
+          xorg_pid=$!
+          sleep 4
+          export DISPLAY=:99
+          xrandr -q
+          glxinfo -B || true
+
+          python3 - <<'PY'
+          import json, os, pathlib, shlex
+          mc = pathlib.Path(os.environ['MC_DIR'])
+          command = json.loads((mc / 'launch-command.json').read_text())
+          (mc / 'run.sh').write_text('#!/bin/sh\nexec ' + ' '.join(shlex.quote(x) for x in command) + '\n')
+          os.chmod(mc / 'run.sh', 0o755)
+          PY
+
+          set +e
+          timeout 240s "$MC_DIR/run.sh" > "$MC_DIR/production-runtime.log" 2>&1
+          status=$?
+          sudo kill "$xorg_pid" 2>/dev/null || true
+
+          echo '=== PRODUCTION RUNTIME LOG ==='
+          tail -n 450 "$MC_DIR/production-runtime.log"
+          if [ -f "$MC_DIR/logs/latest.log" ]; then
+            echo '=== LATEST.LOG ==='
+            tail -n 450 "$MC_DIR/logs/latest.log"
+          fi
+
+          fatal='Mixin apply.*failed|InvalidInjectionException|InvalidMixinException|MixinTransformerError|Unable to launch|Exception in thread "(main|Client thread)"|A fatal error has been detected'
+          if grep -Eqi "$fatal" "$MC_DIR/production-runtime.log" "$MC_DIR/logs/latest.log" 2>/dev/null; then
+            exit 1
+          fi
+          if [ "$status" -eq 124 ]; then
+            echo 'Real production client survived 240 seconds.'
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Upload JAR and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oculus-1.12.2-production-v2
+          path: |
+            ${{ runner.temp }}/oculus-0.1.0.jar
+            ${{ runner.temp }}/install.log
+            ${{ runner.temp }}/minecraft-production/production-runtime.log
+            ${{ runner.temp }}/minecraft-production/logs/latest.log
+            ${{ runner.temp }}/minecraft-production/crash-reports/*.txt
+            /tmp/xorg.log
+          if-no-files-found: warn
+          retention-days: 1
