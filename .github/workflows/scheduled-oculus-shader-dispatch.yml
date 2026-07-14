@@ -14,15 +14,15 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch corrected shader validation and report run ID
+      - name: Dispatch corrected shader validation V2 and report run ID
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           before=$(date -u +%s)
-          gh workflow run oculus-shader-validation.yml --repo "$GITHUB_REPOSITORY" --ref 1.16.X-dev
+          gh workflow run oculus-shader-validation-v2.yml --repo "$GITHUB_REPOSITORY" --ref 1.16.X-dev
           run_id=""
           for attempt in $(seq 1 60); do
-            candidate=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow oculus-shader-validation.yml --event workflow_dispatch --limit 1 --json databaseId,createdAt --jq '.[0] | [.databaseId, .createdAt] | @tsv' 2>/dev/null || true)
+            candidate=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow oculus-shader-validation-v2.yml --event workflow_dispatch --limit 1 --json databaseId,createdAt --jq '.[0] | [.databaseId, .createdAt] | @tsv' 2>/dev/null || true)
             if [ -n "$candidate" ]; then
               candidate_id=$(printf '%s' "$candidate" | cut -f1)
               candidate_time=$(printf '%s' "$candidate" | cut -f2)
@@ -35,4 +35,4 @@ jobs:
             sleep 2
           done
           test -n "$run_id"
-          gh issue comment 1 --repo "$GITHUB_REPOSITORY" --body "OCULUS_SHADER_SCHEDULED_RUN_ID=$run_id"
+          gh issue comment 1 --repo "$GITHUB_REPOSITORY" --body "OCULUS_SHADER_SCHEDULED_V2_RUN_ID=$run_id"
