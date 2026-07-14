@@ -31,13 +31,13 @@ jobs:
           from pathlib import Path
           path = Path('src/main/java/net/oculus/mixin/pipeline/LevelRendererMixin.java')
           text = path.read_text()
-          marker = '''    private static final class NonCullingCamera implements ICamera {
-              @Override'''
-          replacement = '''    private static final class NonCullingCamera implements ICamera {
-              NonCullingCamera() {
-              }
+          marker = '''private static final class NonCullingCamera implements ICamera {
+                  @Override'''
+          replacement = '''private static final class NonCullingCamera implements ICamera {
+                  NonCullingCamera() {
+                  }
 
-              @Override'''
+                  @Override'''
           if marker not in text:
               raise SystemExit('NonCullingCamera marker not found')
           path.write_text(text.replace(marker, replacement, 1))
