@@ -1,0 +1,282 @@
+name: Temporary Oculus 1.12.2 World Load Test
+
+on:
+  push:
+    branches: [automation/build-oculus-112]
+  workflow_dispatch:
+
+jobs:
+  world-load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Restore previously fixed Oculus source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git clone --depth 1 --branch 1.12.2-dev https://github.com/dabrelity1/Oculus.git "$RUNNER_TEMP/Oculus"
+          gh run download 29326417270 --repo "$GITHUB_REPOSITORY" \
+            --name Oculus-1.12.2-production-continuation --dir "$RUNNER_TEMP/previous"
+          source_archive=$(find "$RUNNER_TEMP/previous" -name patched-source.tar.gz -type f | head -n 1)
+          test -n "$source_archive"
+          tar -xzf "$source_archive" -C "$RUNNER_TEMP/Oculus/oculus-1.12.2"
+
+      - name: Fix Relictium 1.2.0 oneshot LVT capture
+        working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/main/java/net/oculus/mixin/pipeline/ChunkOneshotGraphicsStateMixin.java')
+          text = path.read_text()
+          old = '''private void oculus$captureVertexFormat(CommandList commandList, ChunkMeshData meshData, CallbackInfo ci, VertexData vertexData, GlVertexFormat<ChunkMeshAttribute> vertexFormat, TessellationBinding[] bindings, GlMutableBuffer vertexBuffer) {
+                  this.oculus$currentFormat = vertexFormat;
+              }'''
+          new = '''private void oculus$captureVertexFormat(CommandList commandList, ChunkMeshData meshData, CallbackInfo ci, VertexData vertexData, GlVertexFormat<ChunkMeshAttribute> vertexFormat) {
+                  this.oculus$currentFormat = vertexFormat;
+              }'''
+          if old not in text:
+              raise SystemExit('Expected ChunkOneshot callback signature not found')
+          text = text.replace(old, new, 1)
+          text = text.replace('import me.jellysquid.mods.sodium.client.gl.buffer.GlMutableBuffer;\n', '')
+          path.write_text(text)
+          PY
+
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Build fixed reobfuscated JAR
+        working-directory: ${{ runner.temp }}/Oculus/oculus-1.12.2
+        run: |
+          chmod +x gradlew
+          status=1
+          for attempt in 1 2 3; do
+            echo "=== BUILD ATTEMPT $attempt ==="
+            ./gradlew --no-daemon --console=plain build -x test -x compileTestJava > build.log 2>&1
+            status=$?
+            tail -n 240 build.log
+            if [ "$status" -eq 0 ]; then break; fi
+            sleep 12
+          done
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          jar tf build/libs/oculus-0.1.0.jar | grep -E 'oculus.refmap.json|ChunkOneshotGraphicsStateMixin.class'
+          tar -czf patched-source.tar.gz src/main/java src/main/resources build.gradle
+
+      - name: Assemble Forge client and vanilla test server
+        env:
+          MC_DIR: ${{ runner.temp }}/minecraft-production
+          SERVER_DIR: ${{ runner.temp }}/vanilla-server
+          OCULUS_JAR: ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
+        run: |
+          python3 -m pip install --quiet minecraft-launcher-lib
+          python3 - <<'PY' > "$RUNNER_TEMP/install.log" 2>&1
+          import json, os, pathlib, shutil, urllib.request, zipfile
+          import minecraft_launcher_lib
+
+          def download(url, path):
+              path = pathlib.Path(path)
+              path.parent.mkdir(parents=True, exist_ok=True)
+              print('Downloading:', url)
+              request = urllib.request.Request(url, headers={
+                  'User-Agent': 'Mozilla/5.0 Oculus world-load test',
+                  'Accept': '*/*'
+              })
+              with urllib.request.urlopen(request, timeout=180) as response, path.open('wb') as output:
+                  shutil.copyfileobj(response, output)
+
+          mc = pathlib.Path(os.environ['MC_DIR'])
+          server = pathlib.Path(os.environ['SERVER_DIR'])
+          mc.mkdir(parents=True, exist_ok=True)
+          server.mkdir(parents=True, exist_ok=True)
+          java = os.path.join(os.environ['JAVA_HOME'], 'bin', 'java')
+          forge = '1.12.2-14.23.5.2768'
+
+          minecraft_launcher_lib.install.install_minecraft_version('1.12.2', str(mc))
+          installer = mc / 'forge-installer.jar'
+          download(f'https://maven.minecraftforge.net/net/minecraftforge/forge/{forge}/forge-{forge}-installer.jar', installer)
+
+          with zipfile.ZipFile(installer) as archive:
+              info = json.loads(archive.read('install_profile.json'))['versionInfo']
+              version_id = info['id']
+              version_dir = mc / 'versions' / version_id
+              version_dir.mkdir(parents=True, exist_ok=True)
+              (version_dir / f'{version_id}.json').write_text(json.dumps(info, indent=2))
+              shutil.copy2(mc / 'versions/1.12.2/1.12.2.jar', version_dir / f'{version_id}.jar')
+              forge_jar = mc / 'libraries/net/minecraftforge/forge' / forge / f'forge-{forge}.jar'
+              forge_jar.parent.mkdir(parents=True, exist_ok=True)
+              with archive.open(f'forge-{forge}-universal.jar') as source, forge_jar.open('wb') as output:
+                  shutil.copyfileobj(source, output)
+
+          minecraft_launcher_lib.install.install_minecraft_version(version_id, str(mc))
+          mods = mc / 'mods'
+          mods.mkdir(exist_ok=True)
+          shutil.copy2(os.environ['OCULUS_JAR'], mods / 'oculus-0.1.0-world-fixed.jar')
+          download('https://repo.cleanroommc.com/releases/zone/rong/mixinbooter/11.5/mixinbooter-11.5.jar', mods / '-mixinbooter-11.5.jar')
+          download('https://api.modrinth.com/maven/maven/modrinth/relictium/1.2.0/relictium-1.2.0.jar', mods / 'relictium-1.2.0.jar')
+
+          options = minecraft_launcher_lib.utils.generate_test_options()
+          options.update({
+              'username': 'OculusWorldTest',
+              'uuid': '00000000-0000-0000-0000-000000000001',
+              'token': '0',
+              'executablePath': java,
+              'defaultExecutablePath': java,
+              'gameDirectory': str(mc),
+              'customResolution': True,
+              'resolutionWidth': '1280',
+              'resolutionHeight': '720',
+              'jvmArguments': ['-Xms512m', '-Xmx3G', '-Duser.language=en']
+          })
+          command = minecraft_launcher_lib.command.get_minecraft_command(version_id, str(mc), options)
+          command.extend(['--server', '127.0.0.1', '--port', '25565'])
+          (mc / 'launch-command.json').write_text(json.dumps(command))
+
+          manifest = json.loads(urllib.request.urlopen('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json').read())
+          version_url = next(v['url'] for v in manifest['versions'] if v['id'] == '1.12.2')
+          version_json = json.loads(urllib.request.urlopen(version_url).read())
+          download(version_json['downloads']['server']['url'], server / 'server.jar')
+          (server / 'eula.txt').write_text('eula=true\n')
+          (server / 'server.properties').write_text(
+              'online-mode=false\n'
+              'server-port=25565\n'
+              'level-name=world\n'
+              'level-type=DEFAULT\n'
+              'generate-structures=true\n'
+              'view-distance=6\n'
+              'spawn-protection=0\n'
+              'motd=Oculus world load test\n'
+          )
+          print('Client mods:', sorted(p.name for p in mods.iterdir()))
+          PY
+          status=$?
+          tail -n 400 "$RUNNER_TEMP/install.log"
+          exit "$status"
+
+      - name: Start test server
+        env:
+          SERVER_DIR: ${{ runner.temp }}/vanilla-server
+        run: |
+          cd "$SERVER_DIR"
+          java -Xms512m -Xmx1G -jar server.jar nogui > server.log 2>&1 &
+          echo $! > server.pid
+          for attempt in $(seq 1 90); do
+            if grep -q 'Done (' server.log; then
+              tail -n 100 server.log
+              exit 0
+            fi
+            if ! kill -0 "$(cat server.pid)" 2>/dev/null; then
+              cat server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          cat server.log
+          exit 1
+
+      - name: Load a real world in the obfuscated Forge client
+        env:
+          MC_DIR: ${{ runner.temp }}/minecraft-production
+          SERVER_DIR: ${{ runner.temp }}/vanilla-server
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xserver-xorg-video-dummy x11-xserver-utils mesa-utils
+          cat > /tmp/xorg-dummy.conf <<'EOF'
+          Section "ServerFlags"
+              Option "DontVTSwitch" "true"
+              Option "AllowMouseOpenFail" "true"
+              Option "PciForceNone" "true"
+          EndSection
+          Section "Device"
+              Identifier "DummyDevice"
+              Driver "dummy"
+              VideoRam 256000
+          EndSection
+          Section "Monitor"
+              Identifier "DummyMonitor"
+              HorizSync 5.0-1000.0
+              VertRefresh 5.0-200.0
+              Modeline "1280x720" 74.50 1280 1344 1472 1664 720 723 728 748
+          EndSection
+          Section "Screen"
+              Identifier "DummyScreen"
+              Device "DummyDevice"
+              Monitor "DummyMonitor"
+              DefaultDepth 24
+              SubSection "Display"
+                  Depth 24
+                  Modes "1280x720"
+                  Virtual 1280 720
+              EndSubSection
+          EndSection
+          EOF
+          sudo Xorg :99 -noreset -ac +extension GLX +extension RANDR -config /tmp/xorg-dummy.conf > /tmp/xorg.log 2>&1 &
+          xorg_pid=$!
+          sleep 4
+          export DISPLAY=:99
+          glxinfo -B || true
+
+          python3 - <<'PY'
+          import json, os, pathlib, shlex
+          mc = pathlib.Path(os.environ['MC_DIR'])
+          command = json.loads((mc / 'launch-command.json').read_text())
+          (mc / 'run.sh').write_text('#!/bin/sh\nexec ' + ' '.join(shlex.quote(part) for part in command) + '\n')
+          os.chmod(mc / 'run.sh', 0o755)
+          PY
+
+          set +e
+          timeout 180s "$MC_DIR/run.sh" > "$MC_DIR/world-runtime.log" 2>&1
+          status=$?
+          sudo kill "$xorg_pid" 2>/dev/null || true
+          kill "$(cat "$SERVER_DIR/server.pid")" 2>/dev/null || true
+
+          echo '=== CLIENT LOG ==='
+          tail -n 900 "$MC_DIR/world-runtime.log"
+          if [ -f "$MC_DIR/logs/latest.log" ]; then
+            tail -n 900 "$MC_DIR/logs/latest.log"
+          fi
+          echo '=== SERVER LOG ==='
+          tail -n 250 "$SERVER_DIR/server.log"
+
+          fatal='Critical injection failure|Mixin apply.*failed|InvalidInjectionException|InjectionError|InvalidMixinException|MixinTransformerError|NoClassDefFoundError|NoSuchMethodError|NoSuchFieldError|Game crashed|Unexpected error'
+          if grep -Eqi "$fatal" "$MC_DIR/world-runtime.log" "$MC_DIR/logs/latest.log" 2>/dev/null; then
+            exit 1
+          fi
+          if ! grep -q 'OculusWorldTest.*joined the game' "$SERVER_DIR/server.log"; then
+            echo 'Client never joined the test world'
+            exit 1
+          fi
+          if ! grep -q 'Pipeline active - intercepting world rendering' "$MC_DIR/world-runtime.log" "$MC_DIR/logs/latest.log" 2>/dev/null; then
+            echo 'Oculus world pipeline never became active'
+            exit 1
+          fi
+          if [ "$status" -eq 124 ]; then
+            echo 'World loaded and client stayed alive for the full test.'
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Upload world-tested JAR and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oculus-1.12.2-world-tested
+          path: |
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/build/libs/oculus-0.1.0.jar
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/build.log
+            ${{ runner.temp }}/Oculus/oculus-1.12.2/patched-source.tar.gz
+            ${{ runner.temp }}/install.log
+            ${{ runner.temp }}/minecraft-production/world-runtime.log
+            ${{ runner.temp }}/minecraft-production/logs/latest.log
+            ${{ runner.temp }}/minecraft-production/crash-reports/*.txt
+            ${{ runner.temp }}/vanilla-server/server.log
+            /tmp/xorg.log
+          if-no-files-found: warn
+          retention-days: 1
