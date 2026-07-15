@@ -1,0 +1,1 @@
+Trigger the direct macOS OpenGL 2.1 compatibility build after refreshing the patch.
