@@ -25,11 +25,6 @@ jobs:
             17
             21
 
-      - name: Archive source
-        run: |
-          rm -rf pintonium/.git
-          zip -qr Pintonium-source.zip pintonium
-
       - name: Build Forge 1.12.2 shader jar
         id: build
         working-directory: pintonium
@@ -41,6 +36,10 @@ jobs:
           status=$?
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit 0
+
+      - name: Archive source
+        if: always()
+        run: tar --exclude='pintonium/.git' -czf Pintonium-source.tar.gz pintonium
 
       - name: Show build tail
         if: always()
@@ -55,7 +54,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pintonium-source
-          path: Pintonium-source.zip
+          path: Pintonium-source.tar.gz
           if-no-files-found: error
 
       - name: Upload build log
