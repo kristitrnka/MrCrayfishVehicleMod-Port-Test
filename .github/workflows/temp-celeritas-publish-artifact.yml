@@ -1,0 +1,46 @@
+name: Temporary Publish Celeritas macOS GL21 Artifact
+
+on:
+  push:
+    branches: [temp-celeritas-macos-gl21-clean-20260715]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download successful build artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf ci-output
+          mkdir -p ci-output
+          gh run download 29413518893 \
+            --repo kristitrnka/MrCrayfishVehicleMod-Port-Test \
+            --name celeritas-shaders-macos-gl21-full-compat-final \
+            --dir ci-output
+          test -s ci-output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
+          unzip -t ci-output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
+          sha256sum ci-output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar > ci-output/SHA256SUMS.txt
+
+      - name: Commit artifact to temporary branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -f ci-output
+          git commit -m 'ci-output: publish macOS GL21 JAR [skip ci]'
+          git push origin HEAD:temp-celeritas-macos-gl21-clean-20260715
