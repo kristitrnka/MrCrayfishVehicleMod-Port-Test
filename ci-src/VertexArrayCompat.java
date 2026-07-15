@@ -7,18 +7,20 @@ import org.lwjgl.opengl.GLCapabilities;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.lang.reflect.Field;
 
 /**
  * Bridges core/ARB VAOs and Apple's legacy OpenGL 2.1 VAO extension.
  *
  * The common project is compiled against a reduced LWJGL API that does not
- * expose platform extension classes, so the Apple entry points are resolved
- * once at runtime from the full lwjgl-opengl jar supplied by Cleanroom.
+ * expose platform extension members, so both the Apple capability flag and
+ * entry points are resolved at runtime from Cleanroom's full lwjgl-opengl jar.
  */
 public final class VertexArrayCompat {
     private static final MethodHandle APPLE_BIND = findAppleMethod("glBindVertexArrayAPPLE", MethodType.methodType(void.class, int.class));
     private static final MethodHandle APPLE_GENERATE = findAppleMethod("glGenVertexArraysAPPLE", MethodType.methodType(int.class));
     private static final MethodHandle APPLE_DELETE = findAppleMethod("glDeleteVertexArraysAPPLE", MethodType.methodType(void.class, int.class));
+    private static final Field APPLE_CAPABILITY = findCapabilityField("GL_APPLE_vertex_array_object");
 
     private VertexArrayCompat() {
     }
@@ -26,7 +28,7 @@ public final class VertexArrayCompat {
     public static boolean isSupported() {
         GLCapabilities capabilities = GL.getCapabilities();
         return capabilities.glBindVertexArray != 0L ||
-                (capabilities.GL_APPLE_vertex_array_object && APPLE_BIND != null && APPLE_GENERATE != null && APPLE_DELETE != null);
+                (hasAppleVertexArrays(capabilities) && APPLE_BIND != null && APPLE_GENERATE != null && APPLE_DELETE != null);
     }
 
     public static int generate() {
@@ -34,7 +36,7 @@ public final class VertexArrayCompat {
         if (capabilities.glGenVertexArrays != 0L) {
             return GL30C.glGenVertexArrays();
         }
-        if (capabilities.GL_APPLE_vertex_array_object && APPLE_GENERATE != null) {
+        if (hasAppleVertexArrays(capabilities) && APPLE_GENERATE != null) {
             try {
                 return (int) APPLE_GENERATE.invokeExact();
             } catch (Throwable throwable) {
@@ -50,7 +52,7 @@ public final class VertexArrayCompat {
             GL30C.glBindVertexArray(array);
             return;
         }
-        if (capabilities.GL_APPLE_vertex_array_object && APPLE_BIND != null) {
+        if (hasAppleVertexArrays(capabilities) && APPLE_BIND != null) {
             try {
                 APPLE_BIND.invokeExact(array);
                 return;
@@ -73,7 +75,7 @@ public final class VertexArrayCompat {
             GL30C.glDeleteVertexArrays(array);
             return;
         }
-        if (capabilities.GL_APPLE_vertex_array_object && APPLE_DELETE != null) {
+        if (hasAppleVertexArrays(capabilities) && APPLE_DELETE != null) {
             try {
                 APPLE_DELETE.invokeExact(array);
                 return;
@@ -82,6 +84,25 @@ public final class VertexArrayCompat {
             }
         }
         throw new UnsupportedOperationException("Vertex array objects are not supported by the current OpenGL context");
+    }
+
+    private static boolean hasAppleVertexArrays(GLCapabilities capabilities) {
+        if (APPLE_CAPABILITY == null) {
+            return false;
+        }
+        try {
+            return APPLE_CAPABILITY.getBoolean(capabilities);
+        } catch (IllegalAccessException ignored) {
+            return false;
+        }
+    }
+
+    private static Field findCapabilityField(String name) {
+        try {
+            return GLCapabilities.class.getField(name);
+        } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
     }
 
     private static MethodHandle findAppleMethod(String name, MethodType type) {
