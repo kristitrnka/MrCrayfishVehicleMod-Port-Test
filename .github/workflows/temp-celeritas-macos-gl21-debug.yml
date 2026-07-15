@@ -1,0 +1,57 @@
+name: Temporary Celeritas macOS GL21 Patch Debug
+
+on:
+  push:
+    branches:
+      - temp-celeritas-macos-gl21-clean-20260715
+  pull_request:
+    branches:
+      - 1.16.X-dev
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Inspect staged patch
+        id: inspect
+        shell: bash
+        run: |
+          set +e
+          set -x
+          {
+            git fetch origin temp-celeritas-macos-float-attrs-20260715
+            echo fetch_exit=$?
+            git show FETCH_HEAD:temp-celeritas-macos-gl21/full-patch.gz.b64 > full-patch.gz.b64
+            echo show_patch_exit=$?
+            git show FETCH_HEAD:temp-celeritas-macos-gl21/EntityPatcherNew.java > EntityPatcherNew.java
+            echo show_entity_exit=$?
+            wc -c full-patch.gz.b64 EntityPatcherNew.java
+            git hash-object full-patch.gz.b64
+            head -c 80 full-patch.gz.b64; echo
+            tail -c 80 full-patch.gz.b64; echo
+            base64 -d full-patch.gz.b64 > patch.gz
+            echo base64_exit=$?
+            wc -c patch.gz
+            gzip -tv patch.gz
+            echo gzip_test_exit=$?
+            gzip -dc patch.gz > macos_gl21_complete.patch
+            echo gzip_decode_exit=$?
+            wc -c macos_gl21_complete.patch
+            grep -n -m1 'FallbackStagingBuffer' macos_gl21_complete.patch
+            echo grep_buffer_exit=$?
+            grep -n -m1 '#version 120' macos_gl21_complete.patch
+            echo grep_shader_exit=$?
+          } > load-debug.log 2>&1
+          cat load-debug.log
+          exit 0
+
+      - name: Upload debug log
+        uses: actions/upload-artifact@v4
+        with:
+          name: celeritas-gl21-patch-debug
+          path: load-debug.log
+          if-no-files-found: error
