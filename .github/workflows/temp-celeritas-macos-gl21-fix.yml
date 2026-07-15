@@ -52,12 +52,20 @@ jobs:
           printf '\n// Allow Gradle 8 Kotlin to read Stonecutter metadata.\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    compilerOptions.freeCompilerArgs.add("-Xskip-metadata-version-check")\n}\n' >> buildSrc/build.gradle.kts
 
       - name: Build Forge 1.12.2 jar
+        id: build
         working-directory: pintonium
+        shell: bash
         run: |
           chmod +x gradlew
-          ./gradlew -Ptarget_versions=1.12.2 packageJar --stacktrace --console=plain
+          set +e
+          ./gradlew -Ptarget_versions=1.12.2 packageJar --stacktrace --console=plain > ../build.log 2>&1
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          tail -n 240 ../build.log
+          exit 0
 
       - name: Collect production jar
+        if: steps.build.outputs.exit_code == '0'
         run: |
           find pintonium -type f -name '*.jar' -print
           mkdir -p output
@@ -66,9 +74,16 @@ jobs:
           cp "$jar_path" output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-fix.jar
           (cd pintonium && git diff > ../output/macos-gl21-source.patch)
 
-      - name: Upload fixed build
+      - name: Upload diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: celeritas-shaders-macos-gl21-fix
-          path: output/*
+          name: celeritas-shaders-macos-gl21-diagnostics
+          path: |
+            build.log
+            output/*
           if-no-files-found: error
+
+      - name: Fail if build failed
+        if: steps.build.outputs.exit_code != '0'
+        run: exit 1
