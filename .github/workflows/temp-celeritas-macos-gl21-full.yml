@@ -1,0 +1,136 @@
+name: Temporary Celeritas macOS GL21 Full Compatibility Build
+
+on:
+  push:
+    branches:
+      - temp-celeritas-macos-gl21-full-20260715
+  pull_request:
+    branches:
+      - 1.16.X-dev
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout CI host
+        uses: actions/checkout@v4
+
+      - name: Reconstruct compatibility patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d temp-celeritas-macos-gl21/full-patch.gz.b64 | gzip -d > macos_gl21_complete.patch
+          test -s macos_gl21_complete.patch
+          grep -q 'FallbackStagingBuffer' macos_gl21_complete.patch
+          grep -q '#version 120' macos_gl21_complete.patch
+
+      - name: Clone Pintonium-derived bridge source
+        shell: bash
+        run: git clone --depth 1 https://github.com/Xplodin/Pintonium.git pintonium
+
+      - name: Apply macOS OpenGL 2.1 renderer patch
+        working-directory: pintonium
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check ../macos_gl21_complete.patch
+          git apply ../macos_gl21_complete.patch
+          cp ../temp-celeritas-macos-gl21/EntityPatcherNew.java common-shaders/src/main/java/net/irisshaders/iris/pipeline/foss_transform/EntityPatcherNew.java
+
+      - name: Install Java 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Patch legacy build dependencies
+        working-directory: pintonium
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i 's/gradle-9\.6\.0-bin\.zip/gradle-8.14.3-bin.zip/' gradle/wrapper/gradle-wrapper.properties
+          sed -i 's/stonecutter_version=0\.9\.6/stonecutter_version=0.7.11/' gradle.properties
+          sed -i 's/dev.kikugie.stonecutter.settings.tree.TreeBuilder/dev.kikugie.stonecutter.data.tree.builder.TreeBuilder/' settings.gradle.kts
+          sed -i 's/centralScript\.set("build.gradle.kts")/centralScript = "build.gradle.kts"/' settings.gradle.kts
+          sed -i 's/val versionConfig = version(/val versionConfig = vers(/' settings.gradle.kts
+          sed -i 's/versionConfig\.buildscript("build\.\${buildscriptType}\.gradle.kts")/versionConfig.buildscript = "build.${buildscriptType}.gradle.kts"/' settings.gradle.kts
+          sed -i 's#com.gradleup.shadow:com.gradleup.shadow.gradle.plugin:9\.4\.2#com.gradleup.shadow:shadow-gradle-plugin:8.3.8#' buildSrc/build.gradle.kts plugins/celeritas-unimined-plugin/build.gradle.kts
+          sed -i 's#dev.kikugie.stonecutter:dev.kikugie.stonecutter.gradle.plugin:0\.9\.6#dev.kikugie:stonecutter:0.7.11#' buildSrc/build.gradle.kts
+          sed -i 's/stonecutterExt.constants.getting("settings_gui").orElse(false).get()/stonecutterExt.constants.getOrDefault("settings_gui", false)/' buildSrc/src/main/kotlin/celeritas.platform-conventions.gradle.kts
+          sed -i 's/import org.gradle.api.Project;/import kotlin.Unit;\nimport org.gradle.api.Project;/' buildSrc/src/main/java/org/embeddedt/embeddium/gradle/stonecutter/ModDependencyCollector.java
+          sed -i '0,/^        });$/s//            return Unit.INSTANCE;\n        });/' buildSrc/src/main/java/org/embeddedt/embeddium/gradle/stonecutter/ModDependencyCollector.java
+          sed -i 's/shadowJar.getConfigurations().set(List.<Configuration>of());/shadowJar.getConfigurations().clear();/' plugins/celeritas-unimined-plugin/src/main/java/org/embeddedt/embeddium/gradle/unimined/ProductionJarHelper.java
+          sed -i 's/shadowJar.getConfigurations().set(List.of(project.getConfigurations().getByName("shadow")));/shadowJar.getConfigurations().clear();\n            shadowJar.getConfigurations().add(project.getConfigurations().getByName("shadow"));/' plugins/celeritas-unimined-plugin/src/main/java/org/embeddedt/embeddium/gradle/unimined/ProductionJarHelper.java
+          sed -i 's/RetroFuturaBootstrap:1\.0\.7/RetroFuturaBootstrap:1.0.11/' forge122/build.gradle.kts
+          cat >> buildSrc/build.gradle.kts <<'EOF'
+
+// Compatibility for the older Kotlin/Gradle combination used by this temporary CI build.
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    kotlinOptions.jvmTarget = "17"
+}
+EOF
+
+      - name: Build Forge 1.12.2 production JAR
+        id: gradle
+        working-directory: pintonium
+        shell: bash
+        run: |
+          set +e
+          chmod +x gradlew
+          ./gradlew -Ptarget_versions=1.12.2 packageJar --stacktrace --console=plain > ../build.log 2>&1
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          tail -n 260 ../build.log
+          exit 0
+
+      - name: Collect production artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/source
+          find pintonium -type f -name '*.jar' -print | sort
+          jar_path=$(find pintonium -type f -name '*.jar' \
+            ! -name '*-dev.jar' \
+            ! -name '*-sources.jar' \
+            ! -name '*-shadow.jar' \
+            ! -path '*/.gradle/*' \
+            ! -path '*/gradle/*' | sort | tail -n 1)
+          if [ -z "$jar_path" ]; then
+            echo 'No production JAR found.' >&2
+            exit 1
+          fi
+          cp "$jar_path" output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
+          cp macos_gl21_complete.patch output/source/tracked-changes.patch
+          cp temp-celeritas-macos-gl21/EntityPatcherNew.java output/source/EntityPatcherNew.java
+          cp build.log output/source/build.log
+          (cd output && sha256sum Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar > SHA256SUMS.txt)
+          unzip -t output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: celeritas-shaders-macos-gl21-full-compat
+          path: output/
+          if-no-files-found: error
+
+      - name: Fail after uploading diagnostics when build failed
+        if: steps.gradle.outputs.exit_code != '0'
+        shell: bash
+        run: |
+          echo "Gradle failed with exit code ${{ steps.gradle.outputs.exit_code }}" >&2
+          exit 1
