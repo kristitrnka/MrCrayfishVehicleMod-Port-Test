@@ -1,0 +1,74 @@
+name: Temporary Celeritas macOS GL21 Fix
+
+on:
+  push:
+    branches:
+      - temp-celeritas-macos-gl21-fix-20260715
+  pull_request:
+    branches:
+      - 1.16.X-dev
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patch
+        uses: actions/checkout@v4
+
+      - name: Clone shader fork
+        run: git clone --depth 1 https://github.com/Xplodin/Pintonium.git pintonium
+
+      - name: Apply macOS OpenGL 2.1 patch
+        working-directory: pintonium
+        run: git apply ../macos_gl21.patch
+
+      - name: Set up Java toolchains
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            8
+            17
+            21
+
+      - name: Patch old build dependencies
+        working-directory: pintonium
+        run: |
+          sed -i 's/gradle-9\.6\.0-bin\.zip/gradle-8.14.3-bin.zip/' gradle/wrapper/gradle-wrapper.properties
+          sed -i 's/stonecutter_version=0\.9\.6/stonecutter_version=0.7.11/' gradle.properties
+          sed -i 's/dev.kikugie.stonecutter.settings.tree.TreeBuilder/dev.kikugie.stonecutter.data.tree.builder.TreeBuilder/' settings.gradle.kts
+          sed -i 's/centralScript\.set("build.gradle.kts")/centralScript = "build.gradle.kts"/' settings.gradle.kts
+          sed -i 's/val versionConfig = version(/val versionConfig = vers(/' settings.gradle.kts
+          sed -i 's/versionConfig\.buildscript("build\.\${buildscriptType}\.gradle.kts")/versionConfig.buildscript = "build.${buildscriptType}.gradle.kts"/' settings.gradle.kts
+          sed -i 's#com.gradleup.shadow:com.gradleup.shadow.gradle.plugin:9\.4\.2#com.gradleup.shadow:shadow-gradle-plugin:8.3.8#' buildSrc/build.gradle.kts plugins/celeritas-unimined-plugin/build.gradle.kts
+          sed -i 's#dev.kikugie.stonecutter:dev.kikugie.stonecutter.gradle.plugin:0\.9\.6#dev.kikugie:stonecutter:0.7.11#' buildSrc/build.gradle.kts
+          sed -i 's/stonecutterExt.constants.getting("settings_gui").orElse(false).get()/stonecutterExt.constants.getOrDefault("settings_gui", false)/' buildSrc/src/main/kotlin/celeritas.platform-conventions.gradle.kts
+          sed -i 's/import org.gradle.api.Project;/import kotlin.Unit;\nimport org.gradle.api.Project;/' buildSrc/src/main/java/org/embeddedt/embeddium/gradle/stonecutter/ModDependencyCollector.java
+          sed -i '0,/^        });$/s//            return Unit.INSTANCE;\n        });/' buildSrc/src/main/java/org/embeddedt/embeddium/gradle/stonecutter/ModDependencyCollector.java
+          sed -i 's/shadowJar.getConfigurations().set(List.<Configuration>of());/shadowJar.getConfigurations().clear();/' plugins/celeritas-unimined-plugin/src/main/java/org/embeddedt/embeddium/gradle/unimined/ProductionJarHelper.java
+          sed -i 's/shadowJar.getConfigurations().set(List.of(project.getConfigurations().getByName("shadow")));/shadowJar.getConfigurations().clear();\n            shadowJar.getConfigurations().add(project.getConfigurations().getByName("shadow"));/' plugins/celeritas-unimined-plugin/src/main/java/org/embeddedt/embeddium/gradle/unimined/ProductionJarHelper.java
+          sed -i 's/RetroFuturaBootstrap:1\.0\.7/RetroFuturaBootstrap:1.0.11/' forge122/build.gradle.kts
+          printf '\n// Allow Gradle 8 Kotlin to read Stonecutter metadata.\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    compilerOptions.freeCompilerArgs.add("-Xskip-metadata-version-check")\n}\n' >> buildSrc/build.gradle.kts
+
+      - name: Build Forge 1.12.2 jar
+        working-directory: pintonium
+        run: |
+          chmod +x gradlew
+          ./gradlew -Ptarget_versions=1.12.2 packageJar --stacktrace --console=plain
+
+      - name: Collect production jar
+        run: |
+          find pintonium -type f -name '*.jar' -print
+          mkdir -p output
+          jar_path=$(find pintonium/build/libs pintonium/forge122/build/libs -type f -name '*.jar' ! -name '*-dev.jar' ! -name '*-sources.jar' ! -name '*-shadow.jar' | head -n 1)
+          test -n "$jar_path"
+          cp "$jar_path" output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-fix.jar
+          (cd pintonium && git diff > ../output/macos-gl21-source.patch)
+
+      - name: Upload fixed build
+        uses: actions/upload-artifact@v4
+        with:
+          name: celeritas-shaders-macos-gl21-fix
+          path: output/*
+          if-no-files-found: error
