@@ -1,0 +1,47 @@
+name: Temporary Celeritas Chunk Check
+
+on:
+  push:
+    branches: [temp-celeritas-macos-gl21-clean-20260715]
+  pull_request:
+    branches: [1.16.X-dev]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check chunk reconstruction
+        shell: bash
+        run: |
+          set +e
+          {
+            wc -c temp-celeritas-macos-gl21/chunks/part*
+            git hash-object temp-celeritas-macos-gl21/chunks/part*
+            cat temp-celeritas-macos-gl21/chunks/part* > full-patch.gz.b64
+            echo combined_size=$(wc -c < full-patch.gz.b64)
+            echo combined_blob=$(git hash-object full-patch.gz.b64)
+            base64 -d full-patch.gz.b64 > patch.gz
+            echo base64_exit=$?
+            wc -c patch.gz
+            gzip -tv patch.gz
+            echo gzip_test_exit=$?
+            gzip -dc patch.gz > patch.diff
+            echo gzip_decode_exit=$?
+            wc -c patch.diff
+            grep -n -m1 FallbackStagingBuffer patch.diff
+            echo grep_buffer_exit=$?
+            grep -n -m1 '#version 120' patch.diff
+            echo grep_shader_exit=$?
+          } > chunk-check.log 2>&1
+          cat chunk-check.log
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: celeritas-chunk-check
+          path: |
+            chunk-check.log
+            full-patch.gz.b64
+            patch.gz
+            patch.diff
+          if-no-files-found: error
