@@ -31,23 +31,43 @@ jobs:
           zip -qr Pintonium-source.zip pintonium
 
       - name: Build Forge 1.12.2 shader jar
+        id: build
         working-directory: pintonium
+        shell: bash
         run: |
           chmod +x gradlew
-          ./gradlew -Ptarget_versions=1.12.2 packageJar --stacktrace
+          set +e
+          ./gradlew -Ptarget_versions=1.12.2 packageJar --stacktrace --console=plain > ../pintonium-build.log 2>&1
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Show build tail
+        if: always()
+        run: tail -n 220 pintonium-build.log || true
 
       - name: Show outputs
         if: always()
         run: find pintonium -type f -name '*.jar' -print
 
       - name: Upload source
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pintonium-source
           path: Pintonium-source.zip
           if-no-files-found: error
 
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pintonium-build-log
+          path: pintonium-build.log
+          if-no-files-found: error
+
       - name: Upload shader jar
+        if: steps.build.outputs.exit_code == '0'
         uses: actions/upload-artifact@v4
         with:
           name: pintonium-forge-1.12.2
@@ -55,3 +75,7 @@ jobs:
             pintonium/build/libs/**/*.jar
             pintonium/forge122/build/libs/*.jar
           if-no-files-found: error
+
+      - name: Fail if build failed
+        if: steps.build.outputs.exit_code != '0'
+        run: exit 1
