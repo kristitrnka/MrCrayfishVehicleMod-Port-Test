@@ -25,6 +25,10 @@ jobs:
             17
             21
 
+      - name: Use Gradle 8 for Unimined compatibility
+        working-directory: pintonium
+        run: sed -i 's/gradle-9\.6\.0-bin\.zip/gradle-8.14.3-bin.zip/' gradle/wrapper/gradle-wrapper.properties
+
       - name: Build Forge 1.12.2 shader jar
         id: build
         working-directory: pintonium
