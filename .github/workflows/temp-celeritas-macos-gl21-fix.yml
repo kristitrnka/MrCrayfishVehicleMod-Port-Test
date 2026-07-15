@@ -71,10 +71,11 @@ jobs:
 
       - name: Collect production jar
         if: steps.build.outputs.exit_code == '0'
+        shell: bash
         run: |
-          find pintonium -type f -name '*.jar' -print
           mkdir -p output
-          jar_path=$(find pintonium/build/libs pintonium/forge122/build/libs -type f -name '*.jar' ! -name '*-dev.jar' ! -name '*-sources.jar' ! -name '*-shadow.jar' | head -n 1)
+          find pintonium -type f -path '*/build/libs/*' -name '*.jar' -printf '%s %p\n' | sort -nr
+          jar_path=$(find pintonium -type f -path '*/build/libs/*' -name '*.jar' ! -name '*-dev.jar' ! -name '*-sources.jar' ! -name '*-shadow.jar' -printf '%s %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
           test -n "$jar_path"
           cp "$jar_path" output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-fix.jar
           (cd pintonium && git diff > ../output/macos-gl21-source.patch)
