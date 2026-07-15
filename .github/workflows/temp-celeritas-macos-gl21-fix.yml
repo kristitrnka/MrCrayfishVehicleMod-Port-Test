@@ -2,47 +2,37 @@ name: Temporary Celeritas macOS GL21 Clean Build
 
 on:
   push:
-    branches:
-      - temp-celeritas-macos-gl21-clean-20260715
+    branches: [temp-celeritas-macos-gl21-clean-20260715]
   pull_request:
-    branches:
-      - 1.16.X-dev
+    branches: [1.16.X-dev]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     steps:
-      - name: Checkout clean CI branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Reconstruct and verify compatibility patch
+      - name: Reconstruct patch
         shell: bash
         run: |
           set -euo pipefail
-          cat temp-celeritas-macos-gl21/chunks/part00 \
-              temp-celeritas-macos-gl21/chunks/part01 \
-              temp-celeritas-macos-gl21/chunks/part02 \
-              temp-celeritas-macos-gl21/chunks/part03 \
-              temp-celeritas-macos-gl21/chunks/part04 > full-patch.gz.b64
-          test "$(git hash-object full-patch.gz.b64)" = "0daaf7cde291ddf5c16fe25abc69bb4332d4246f"
+          cat temp-celeritas-macos-gl21/chunks/part00 temp-celeritas-macos-gl21/chunks/part01 temp-celeritas-macos-gl21/chunks/part02 temp-celeritas-macos-gl21/chunks/part03 temp-celeritas-macos-gl21/chunks/part04 > full-patch.gz.b64
+          test "$(git hash-object full-patch.gz.b64)" = "13d0dba0f9a6218e7a31e31897415db41fcf59b6"
           base64 -d full-patch.gz.b64 | gzip -d > macos_gl21_complete.patch
-          test -s macos_gl21_complete.patch
           grep -q 'FallbackStagingBuffer' macos_gl21_complete.patch
           grep -q '#version 120' macos_gl21_complete.patch
           git fetch origin temp-celeritas-macos-float-attrs-20260715
           git show FETCH_HEAD:temp-celeritas-macos-gl21/EntityPatcherNew.java > EntityPatcherNew.java
           grep -q 'isIntegerAttributesSupported' EntityPatcherNew.java
 
-      - name: Clone Pintonium-derived bridge source
-        shell: bash
+      - name: Clone bridge source
         run: git clone --depth 1 https://github.com/Xplodin/Pintonium.git pintonium
 
-      - name: Apply macOS OpenGL 2.1 renderer patch
+      - name: Apply patch
         working-directory: pintonium
         shell: bash
         run: |
@@ -51,8 +41,7 @@ jobs:
           git apply ../macos_gl21_complete.patch
           cp ../EntityPatcherNew.java common-shaders/src/main/java/net/irisshaders/iris/pipeline/foss_transform/EntityPatcherNew.java
 
-      - name: Set up Java toolchains
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: |
@@ -60,7 +49,7 @@ jobs:
             17
             21
 
-      - name: Patch old build dependencies
+      - name: Patch legacy build dependencies
         working-directory: pintonium
         shell: bash
         run: |
@@ -94,19 +83,16 @@ jobs:
           tail -n 300 ../build.log
           exit 0
 
-      - name: Collect production jar
+      - name: Collect jar
         if: steps.build.outputs.exit_code == '0'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p output/source
-          find pintonium -type f -path '*/build/libs/*' -name '*.jar' -printf '%s %p\n' | sort -nr
           jar_path=$(find pintonium -type f -path '*/build/libs/*' -name '*.jar' ! -name '*-dev.jar' ! -name '*-sources.jar' ! -name '*-shadow.jar' -printf '%s %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
           test -n "$jar_path"
           cp "$jar_path" output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
-          cp macos_gl21_complete.patch output/source/tracked-changes.patch
-          cp EntityPatcherNew.java output/source/
-          cp build.log output/source/
+          cp macos_gl21_complete.patch EntityPatcherNew.java build.log output/source/
           sha256sum output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar > output/SHA256SUMS.txt
           unzip -t output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
 
