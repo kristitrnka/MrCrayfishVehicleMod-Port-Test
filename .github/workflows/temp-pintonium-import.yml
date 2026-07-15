@@ -25,7 +25,7 @@ jobs:
             17
             21
 
-      - name: Use compatible Gradle and Stonecutter versions
+      - name: Use compatible Gradle plugin versions
         working-directory: pintonium
         run: |
           sed -i 's/gradle-9\.6\.0-bin\.zip/gradle-8.14.3-bin.zip/' gradle/wrapper/gradle-wrapper.properties
@@ -34,6 +34,8 @@ jobs:
           sed -i 's/centralScript\.set("build.gradle.kts")/centralScript = "build.gradle.kts"/' settings.gradle.kts
           sed -i 's/val versionConfig = version(/val versionConfig = vers(/' settings.gradle.kts
           sed -i 's/versionConfig\.buildscript("build\.\${buildscriptType}\.gradle.kts")/versionConfig.buildscript = "build.${buildscriptType}.gradle.kts"/' settings.gradle.kts
+          sed -i 's#com.gradleup.shadow:com.gradleup.shadow.gradle.plugin:9\.4\.2#com.gradleup.shadow:shadow-gradle-plugin:8.3.8#' buildSrc/build.gradle.kts plugins/celeritas-unimined-plugin/build.gradle.kts
+          sed -i 's#dev.kikugie.stonecutter:dev.kikugie.stonecutter.gradle.plugin:0\.9\.6#dev.kikugie:stonecutter:0.7.11#' buildSrc/build.gradle.kts
 
       - name: Build Forge 1.12.2 shader jar
         id: build
