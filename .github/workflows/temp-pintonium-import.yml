@@ -36,13 +36,7 @@ jobs:
           sed -i 's/versionConfig\.buildscript("build\.\${buildscriptType}\.gradle.kts")/versionConfig.buildscript = "build.${buildscriptType}.gradle.kts"/' settings.gradle.kts
           sed -i 's#com.gradleup.shadow:com.gradleup.shadow.gradle.plugin:9\.4\.2#com.gradleup.shadow:shadow-gradle-plugin:8.3.8#' buildSrc/build.gradle.kts plugins/celeritas-unimined-plugin/build.gradle.kts
           sed -i 's#dev.kikugie.stonecutter:dev.kikugie.stonecutter.gradle.plugin:0\.9\.6#dev.kikugie:stonecutter:0.7.11#' buildSrc/build.gradle.kts
-          cat >> buildSrc/build.gradle.kts <<'EOF'
-
-// Stonecutter 0.7.11 is published with newer Kotlin metadata than Gradle 8 embeds.
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-    compilerOptions.freeCompilerArgs.add("-Xskip-metadata-version-check")
-}
-EOF
+          printf '\n// Allow the Gradle 8 Kotlin compiler to read Stonecutter metadata.\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    compilerOptions.freeCompilerArgs.add("-Xskip-metadata-version-check")\n}\n' >> buildSrc/build.gradle.kts
 
       - name: Build Forge 1.12.2 shader jar
         id: build
