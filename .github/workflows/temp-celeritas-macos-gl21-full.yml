@@ -1,13 +1,13 @@
-name: Temporary Celeritas macOS GL21 Full Compatibility Build
+name: Temporary Celeritas macOS GL21 Direct Build
 
 on:
   push:
     branches:
-      - temp-celeritas-macos-gl21-full-20260715
-  pull_request:
-    branches:
       - 1.16.X-dev
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -15,8 +15,12 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Checkout CI host
+      - name: Checkout temporary build branch
         uses: actions/checkout@v4
+        with:
+          ref: temp-celeritas-macos-gl21-full-20260715
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Reconstruct compatibility patch
         shell: bash
@@ -95,42 +99,44 @@ EOF
           ./gradlew -Ptarget_versions=1.12.2 packageJar --stacktrace --console=plain > ../build.log 2>&1
           status=$?
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
-          tail -n 260 ../build.log
+          tail -n 300 ../build.log
           exit 0
 
-      - name: Collect production artifact
+      - name: Collect result
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p output/source
-          find pintonium -type f -name '*.jar' -print | sort
-          jar_path=$(find pintonium -type f -name '*.jar' \
-            ! -name '*-dev.jar' \
-            ! -name '*-sources.jar' \
-            ! -name '*-shadow.jar' \
-            ! -path '*/.gradle/*' \
-            ! -path '*/gradle/*' | sort | tail -n 1)
-          if [ -z "$jar_path" ]; then
-            echo 'No production JAR found.' >&2
-            exit 1
+          rm -rf ci-output
+          mkdir -p ci-output/source
+          cp build.log ci-output/build.log
+          cp macos_gl21_complete.patch ci-output/source/tracked-changes.patch
+          cp temp-celeritas-macos-gl21/EntityPatcherNew.java ci-output/source/EntityPatcherNew.java
+          echo "gradle_exit=${{ steps.gradle.outputs.exit_code }}" > ci-output/build-status.txt
+
+          if [ "${{ steps.gradle.outputs.exit_code }}" = "0" ]; then
+            jar_path=$(find pintonium -type f -name '*.jar' \
+              ! -name '*-dev.jar' \
+              ! -name '*-sources.jar' \
+              ! -name '*-shadow.jar' \
+              ! -path '*/.gradle/*' \
+              ! -path '*/gradle/*' | sort | tail -n 1)
+            test -n "$jar_path"
+            cp "$jar_path" ci-output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
+            sha256sum ci-output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar > ci-output/SHA256SUMS.txt
+            unzip -t ci-output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
           fi
-          cp "$jar_path" output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
-          cp macos_gl21_complete.patch output/source/tracked-changes.patch
-          cp temp-celeritas-macos-gl21/EntityPatcherNew.java output/source/EntityPatcherNew.java
-          cp build.log output/source/build.log
-          (cd output && sha256sum Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar > SHA256SUMS.txt)
-          unzip -t output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
 
-      - name: Upload build
-        uses: actions/upload-artifact@v4
-        with:
-          name: celeritas-shaders-macos-gl21-full-compat
-          path: output/
-          if-no-files-found: error
-
-      - name: Fail after uploading diagnostics when build failed
-        if: steps.gradle.outputs.exit_code != '0'
+      - name: Publish result to temporary branch
         shell: bash
         run: |
-          echo "Gradle failed with exit code ${{ steps.gradle.outputs.exit_code }}" >&2
-          exit 1
+          set -euo pipefail
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -f ci-output
+          git commit -m "ci-output: macOS GL2.1 build result" || true
+          git push origin HEAD:temp-celeritas-macos-gl21-full-20260715
+
+      - name: Fail after publishing diagnostics
+        if: steps.gradle.outputs.exit_code != '0'
+        shell: bash
+        run: exit 1
