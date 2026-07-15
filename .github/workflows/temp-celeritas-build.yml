@@ -1,0 +1,42 @@
+name: Temporary Celeritas 1.12.2 Build
+
+on:
+  push:
+    branches:
+      - temp-celeritas-build-20260715
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone Celeritas source
+        run: git clone --depth 1 --branch stonecutter https://git.taumc.org/embeddedt/celeritas.git source
+
+      - name: Set up Java toolchains
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            8
+            17
+            21
+
+      - name: Build Forge 1.12.2
+        working-directory: source
+        run: |
+          chmod +x gradlew
+          ./gradlew -Pceleritas_target_versions=1.12.2 packageJar --stacktrace
+
+      - name: List build outputs
+        if: always()
+        run: find source/build source/forge122/build -type f -name '*.jar' -print 2>/dev/null || true
+
+      - name: Upload Celeritas JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: celeritas-forge-1.12.2
+          path: |
+            source/build/libs/**/*.jar
+            source/forge122/build/libs/*.jar
+          if-no-files-found: error
