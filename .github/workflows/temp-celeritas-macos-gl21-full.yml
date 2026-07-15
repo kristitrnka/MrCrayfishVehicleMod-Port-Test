@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - temp-celeritas-macos-gl21-full-20260715
+  pull_request:
+    branches:
+      - 1.16.X-dev
   workflow_dispatch:
 
 jobs:
