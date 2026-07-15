@@ -1,0 +1,57 @@
+name: Temporary Pintonium Import
+
+on:
+  push:
+    branches:
+      - temp-pintonium-import-20260715
+  pull_request:
+    branches:
+      - 1.16.X-dev
+  workflow_dispatch:
+
+jobs:
+  import-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone Pintonium shader fork
+        run: git clone --depth 1 https://github.com/Xplodin/Pintonium.git pintonium
+
+      - name: Set up Java toolchains
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            8
+            17
+            21
+
+      - name: Archive source
+        run: |
+          rm -rf pintonium/.git
+          zip -qr Pintonium-source.zip pintonium
+
+      - name: Build Forge 1.12.2 shader jar
+        working-directory: pintonium
+        run: |
+          chmod +x gradlew
+          ./gradlew -Ptarget_versions=1.12.2 packageJar --stacktrace
+
+      - name: Show outputs
+        if: always()
+        run: find pintonium -type f -name '*.jar' -print
+
+      - name: Upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: pintonium-source
+          path: Pintonium-source.zip
+          if-no-files-found: error
+
+      - name: Upload shader jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: pintonium-forge-1.12.2
+          path: |
+            pintonium/build/libs/**/*.jar
+            pintonium/forge122/build/libs/*.jar
+          if-no-files-found: error
