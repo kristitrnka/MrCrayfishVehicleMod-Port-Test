@@ -1,12 +1,9 @@
-name: Temporary Celeritas macOS GL21 Fix
+name: Temporary Celeritas macOS Float Attributes Fix
 
 on:
   push:
     branches:
-      - temp-celeritas-macos-gl21-fix-20260715
-  pull_request:
-    branches:
-      - 1.16.X-dev
+      - temp-celeritas-macos-float-attrs-20260715
   workflow_dispatch:
 
 jobs:
@@ -23,10 +20,11 @@ jobs:
         working-directory: pintonium
         run: git apply ../macos_gl21.patch
 
-      - name: Install runtime-resolved extension bridges
+      - name: Install macOS compatibility sources
         run: |
           cp ci-src/VertexArrayCompat.java pintonium/common/src/main/java/org/embeddedt/embeddium/impl/gl/util/VertexArrayCompat.java
           cp ci-src/IntegerVertexAttribCompat.java pintonium/common/src/main/java/org/embeddedt/embeddium/impl/gl/util/IntegerVertexAttribCompat.java
+          cp ci-src/EntityPatcherNew.java pintonium/common-shaders/src/main/java/net/irisshaders/iris/pipeline/foss_transform/EntityPatcherNew.java
 
       - name: Set up Java toolchains
         uses: actions/setup-java@v4
@@ -73,21 +71,25 @@ jobs:
         if: steps.build.outputs.exit_code == '0'
         shell: bash
         run: |
-          mkdir -p output
+          mkdir -p output/source
           find pintonium -type f -path '*/build/libs/*' -name '*.jar' -printf '%s %p\n' | sort -nr
           jar_path=$(find pintonium -type f -path '*/build/libs/*' -name '*.jar' ! -name '*-dev.jar' ! -name '*-sources.jar' ! -name '*-shadow.jar' -printf '%s %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
           test -n "$jar_path"
-          cp "$jar_path" output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-fix.jar
-          (cd pintonium && git diff > ../output/macos-gl21-source.patch)
+          cp "$jar_path" output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-float-attrs.jar
+          cp ci-src/VertexArrayCompat.java output/source/
+          cp ci-src/IntegerVertexAttribCompat.java output/source/
+          cp ci-src/EntityPatcherNew.java output/source/
+          (cd pintonium && git diff > ../output/source/tracked-changes.patch)
 
-      - name: Upload diagnostics
+      - name: Upload build and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: celeritas-shaders-macos-gl21-diagnostics
+          name: celeritas-shaders-macos-float-attrs
           path: |
             build.log
             output/*
+            output/source/*
           if-no-files-found: error
 
       - name: Fail if build failed
