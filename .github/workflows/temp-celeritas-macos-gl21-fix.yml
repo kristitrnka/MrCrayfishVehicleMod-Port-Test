@@ -17,14 +17,16 @@ jobs:
     steps:
       - name: Checkout clean CI branch
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Download compatibility sources from staging branch
+      - name: Load compatibility sources from staging branch
         shell: bash
         run: |
           set -euo pipefail
-          root='https://raw.githubusercontent.com/kristitrnka/MrCrayfishVehicleMod-Port-Test/temp-celeritas-macos-float-attrs-20260715'
-          curl -fsSL "$root/temp-celeritas-macos-gl21/full-patch.gz.b64" -o full-patch.gz.b64
-          curl -fsSL "$root/temp-celeritas-macos-gl21/EntityPatcherNew.java" -o EntityPatcherNew.java
+          git fetch origin temp-celeritas-macos-float-attrs-20260715
+          git show FETCH_HEAD:temp-celeritas-macos-gl21/full-patch.gz.b64 > full-patch.gz.b64
+          git show FETCH_HEAD:temp-celeritas-macos-gl21/EntityPatcherNew.java > EntityPatcherNew.java
           base64 -d full-patch.gz.b64 | gzip -d > macos_gl21_complete.patch
           test -s macos_gl21_complete.patch
           grep -q 'FallbackStagingBuffer' macos_gl21_complete.patch
