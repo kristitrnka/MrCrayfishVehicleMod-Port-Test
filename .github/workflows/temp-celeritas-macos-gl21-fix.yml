@@ -23,6 +23,11 @@ jobs:
         working-directory: pintonium
         run: git apply ../macos_gl21.patch
 
+      - name: Install runtime-resolved extension bridges
+        run: |
+          cp ci-src/VertexArrayCompat.java pintonium/common/src/main/java/org/embeddedt/embeddium/impl/gl/util/VertexArrayCompat.java
+          cp ci-src/IntegerVertexAttribCompat.java pintonium/common/src/main/java/org/embeddedt/embeddium/impl/gl/util/IntegerVertexAttribCompat.java
+
       - name: Set up Java toolchains
         uses: actions/setup-java@v4
         with:
