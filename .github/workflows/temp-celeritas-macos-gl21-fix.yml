@@ -20,17 +20,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Load compatibility sources from staging branch
+      - name: Reconstruct and verify compatibility patch
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin temp-celeritas-macos-float-attrs-20260715
-          git show FETCH_HEAD:temp-celeritas-macos-gl21/full-patch.gz.b64 > full-patch.gz.b64
-          git show FETCH_HEAD:temp-celeritas-macos-gl21/EntityPatcherNew.java > EntityPatcherNew.java
+          cat temp-celeritas-macos-gl21/chunks/part00 \
+              temp-celeritas-macos-gl21/chunks/part01 \
+              temp-celeritas-macos-gl21/chunks/part02 \
+              temp-celeritas-macos-gl21/chunks/part03 \
+              temp-celeritas-macos-gl21/chunks/part04 > full-patch.gz.b64
+          test "$(git hash-object full-patch.gz.b64)" = "0daaf7cde291ddf5c16fe25abc69bb4332d4246f"
           base64 -d full-patch.gz.b64 | gzip -d > macos_gl21_complete.patch
           test -s macos_gl21_complete.patch
           grep -q 'FallbackStagingBuffer' macos_gl21_complete.patch
           grep -q '#version 120' macos_gl21_complete.patch
+          git fetch origin temp-celeritas-macos-float-attrs-20260715
+          git show FETCH_HEAD:temp-celeritas-macos-gl21/EntityPatcherNew.java > EntityPatcherNew.java
+          grep -q 'isIntegerAttributesSupported' EntityPatcherNew.java
 
       - name: Clone Pintonium-derived bridge source
         shell: bash
