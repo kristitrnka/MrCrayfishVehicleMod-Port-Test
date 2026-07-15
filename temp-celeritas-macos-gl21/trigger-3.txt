@@ -1,0 +1,1 @@
+Trigger pull_request workflow after enabling it on the default branch.
