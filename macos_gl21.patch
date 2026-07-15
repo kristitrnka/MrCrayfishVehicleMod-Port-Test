@@ -1,0 +1,366 @@
+diff --git a/common/src/main/java/org/embeddedt/embeddium/impl/gl/array/GlVertexArray.java b/common/src/main/java/org/embeddedt/embeddium/impl/gl/array/GlVertexArray.java
+index 0cc98fc..0ca0de0 100644
+--- a/common/src/main/java/org/embeddedt/embeddium/impl/gl/array/GlVertexArray.java
++++ b/common/src/main/java/org/embeddedt/embeddium/impl/gl/array/GlVertexArray.java
+@@ -1,7 +1,7 @@
+ package org.embeddedt.embeddium.impl.gl.array;
+ 
+ import org.embeddedt.embeddium.impl.gl.GlObject;
+-import org.lwjgl.opengl.GL30C;
++import org.embeddedt.embeddium.impl.gl.util.VertexArrayCompat;
+ 
+ /**
+  * Provides Vertex Array functionality on supported platforms.
+@@ -10,11 +10,11 @@ public class GlVertexArray extends GlObject {
+     public static final int NULL_ARRAY_ID = 0;
+ 
+     public GlVertexArray() {
+-        this.setHandle(GL30C.glGenVertexArrays());
++        this.setHandle(VertexArrayCompat.generate());
+     }
+ 
+     @Override
+     protected void destroyInternal() {
+-        GL30C.glDeleteVertexArrays(this.handle());
++        VertexArrayCompat.delete(this.handle());
+     }
+ }
+diff --git a/common/src/main/java/org/embeddedt/embeddium/impl/gl/device/GLRenderDevice.java b/common/src/main/java/org/embeddedt/embeddium/impl/gl/device/GLRenderDevice.java
+index 757331b..8890267 100644
+--- a/common/src/main/java/org/embeddedt/embeddium/impl/gl/device/GLRenderDevice.java
++++ b/common/src/main/java/org/embeddedt/embeddium/impl/gl/device/GLRenderDevice.java
+@@ -7,6 +7,7 @@ import org.embeddedt.embeddium.impl.gl.state.GlStateTracker;
+ import org.embeddedt.embeddium.impl.gl.sync.GlFence;
+ import org.embeddedt.embeddium.impl.gl.tessellation.*;
+ import org.embeddedt.embeddium.impl.gl.util.EnumBitField;
++import org.embeddedt.embeddium.impl.gl.util.VertexArrayCompat;
+ import org.lwjgl.opengl.*;
+ import java.nio.ByteBuffer;
+ 
+@@ -85,7 +86,7 @@ public class GLRenderDevice implements RenderDevice {
+         @Override
+         public void bindVertexArray(GlVertexArray array) {
+             if (this.stateTracker.makeVertexArrayActive(array)) {
+-                GL30C.glBindVertexArray(array.handle());
++                VertexArrayCompat.bind(array.handle());
+             }
+         }
+ 
+@@ -115,7 +116,7 @@ public class GLRenderDevice implements RenderDevice {
+         @Override
+         public void unbindVertexArray() {
+             if (this.stateTracker.makeVertexArrayActive(null)) {
+-                GL30C.glBindVertexArray(GlVertexArray.NULL_ARRAY_ID);
++                VertexArrayCompat.bind(GlVertexArray.NULL_ARRAY_ID);
+             }
+         }
+ 
+diff --git a/common/src/main/java/org/embeddedt/embeddium/impl/gl/tessellation/GlAbstractTessellation.java b/common/src/main/java/org/embeddedt/embeddium/impl/gl/tessellation/GlAbstractTessellation.java
+index 7d467f0..426753f 100644
+--- a/common/src/main/java/org/embeddedt/embeddium/impl/gl/tessellation/GlAbstractTessellation.java
++++ b/common/src/main/java/org/embeddedt/embeddium/impl/gl/tessellation/GlAbstractTessellation.java
+@@ -4,6 +4,7 @@ import org.embeddedt.embeddium.impl.gl.attribute.GlVertexAttributeBinding;
+ import org.embeddedt.embeddium.impl.gl.device.CommandList;
+ import org.lwjgl.opengl.GL20C;
+ import org.lwjgl.opengl.GL30C;
++import org.embeddedt.embeddium.impl.gl.util.IntegerVertexAttribCompat;
+ 
+ public abstract class GlAbstractTessellation implements GlTessellation {
+     protected final TessellationBinding[] bindings;
+@@ -18,7 +19,7 @@ public abstract class GlAbstractTessellation implements GlTessellation {
+ 
+             for (GlVertexAttributeBinding attrib : binding.attributeBindings()) {
+                 if (attrib.isIntType()) {
+-                    GL30C.glVertexAttribIPointer(attrib.getIndex(), attrib.getCount(), attrib.getFormat().typeId(),
++                    IntegerVertexAttribCompat.vertexAttribIPointer(attrib.getIndex(), attrib.getCount(), attrib.getFormat().typeId(),
+                             attrib.getStride(), attrib.getPointer());
+                 } else {
+                     GL20C.glVertexAttribPointer(attrib.getIndex(), attrib.getCount(), attrib.getFormat().typeId(), attrib.isNormalized(),
+diff --git a/common/src/main/java/org/embeddedt/embeddium/impl/gl/util/IntegerVertexAttribCompat.java b/common/src/main/java/org/embeddedt/embeddium/impl/gl/util/IntegerVertexAttribCompat.java
+new file mode 100644
+index 0000000..d5b1ead
+--- /dev/null
++++ b/common/src/main/java/org/embeddedt/embeddium/impl/gl/util/IntegerVertexAttribCompat.java
+@@ -0,0 +1,38 @@
++package org.embeddedt.embeddium.impl.gl.util;
++
++import org.lwjgl.opengl.EXTGpuShader4;
++import org.lwjgl.opengl.GL;
++import org.lwjgl.opengl.GL30C;
++import org.lwjgl.opengl.GLCapabilities;
++
++/** Compatibility bridge for integer vertex attributes on OpenGL 2.1 macOS. */
++public final class IntegerVertexAttribCompat {
++    private IntegerVertexAttribCompat() {
++    }
++
++    public static void vertexAttribI3i(int index, int x, int y, int z) {
++        GLCapabilities capabilities = GL.getCapabilities();
++        if (capabilities.glVertexAttribI3i != 0L) {
++            GL30C.glVertexAttribI3i(index, x, y, z);
++            return;
++        }
++        if (capabilities.GL_EXT_gpu_shader4) {
++            EXTGpuShader4.glVertexAttribI3iEXT(index, x, y, z);
++            return;
++        }
++        throw new UnsupportedOperationException("Integer vertex attributes are not supported by the current OpenGL context");
++    }
++
++    public static void vertexAttribIPointer(int index, int size, int type, int stride, long pointer) {
++        GLCapabilities capabilities = GL.getCapabilities();
++        if (capabilities.glVertexAttribIPointer != 0L) {
++            GL30C.glVertexAttribIPointer(index, size, type, stride, pointer);
++            return;
++        }
++        if (capabilities.GL_EXT_gpu_shader4) {
++            EXTGpuShader4.glVertexAttribIPointerEXT(index, size, type, stride, pointer);
++            return;
++        }
++        throw new UnsupportedOperationException("Integer vertex attributes are not supported by the current OpenGL context");
++    }
++}
+diff --git a/common/src/main/java/org/embeddedt/embeddium/impl/gl/util/VertexArrayCompat.java b/common/src/main/java/org/embeddedt/embeddium/impl/gl/util/VertexArrayCompat.java
+new file mode 100644
+index 0000000..7d11fae
+--- /dev/null
++++ b/common/src/main/java/org/embeddedt/embeddium/impl/gl/util/VertexArrayCompat.java
+@@ -0,0 +1,66 @@
++package org.embeddedt.embeddium.impl.gl.util;
++
++import org.lwjgl.opengl.APPLEVertexArrayObject;
++import org.lwjgl.opengl.GL;
++import org.lwjgl.opengl.GL30C;
++import org.lwjgl.opengl.GLCapabilities;
++
++/**
++ * Bridges core/ARB VAOs and Apple's legacy OpenGL 2.1 VAO extension.
++ *
++ * macOS exposes GL_APPLE_vertex_array_object in legacy 2.1 contexts instead
++ * of the core OpenGL 3.0 entry points. Calling GL30C directly in that context
++ * aborts the JVM because the function pointer is null.
++ */
++public final class VertexArrayCompat {
++    private VertexArrayCompat() {
++    }
++
++    public static boolean isSupported() {
++        GLCapabilities capabilities = GL.getCapabilities();
++        return capabilities.glBindVertexArray != 0L || capabilities.GL_APPLE_vertex_array_object;
++    }
++
++    public static int generate() {
++        GLCapabilities capabilities = GL.getCapabilities();
++        if (capabilities.glGenVertexArrays != 0L) {
++            return GL30C.glGenVertexArrays();
++        }
++        if (capabilities.GL_APPLE_vertex_array_object) {
++            return APPLEVertexArrayObject.glGenVertexArraysAPPLE();
++        }
++        throw new UnsupportedOperationException("Vertex array objects are not supported by the current OpenGL context");
++    }
++
++    public static void bind(int array) {
++        GLCapabilities capabilities = GL.getCapabilities();
++        if (capabilities.glBindVertexArray != 0L) {
++            GL30C.glBindVertexArray(array);
++            return;
++        }
++        if (capabilities.GL_APPLE_vertex_array_object) {
++            APPLEVertexArrayObject.glBindVertexArrayAPPLE(array);
++            return;
++        }
++        if (array != 0) {
++            throw new UnsupportedOperationException("Vertex array objects are not supported by the current OpenGL context");
++        }
++    }
++
++    public static void delete(int array) {
++        if (array == 0) {
++            return;
++        }
++
++        GLCapabilities capabilities = GL.getCapabilities();
++        if (capabilities.glDeleteVertexArrays != 0L) {
++            GL30C.glDeleteVertexArrays(array);
++            return;
++        }
++        if (capabilities.GL_APPLE_vertex_array_object) {
++            APPLEVertexArrayObject.glDeleteVertexArraysAPPLE(array);
++            return;
++        }
++        throw new UnsupportedOperationException("Vertex array objects are not supported by the current OpenGL context");
++    }
++}
+diff --git a/forge122/src/main/java/org/taumc/celeritas/CeleritasVintage.java b/forge122/src/main/java/org/taumc/celeritas/CeleritasVintage.java
+index 225eb6d..8c4b2a4 100644
+--- a/forge122/src/main/java/org/taumc/celeritas/CeleritasVintage.java
++++ b/forge122/src/main/java/org/taumc/celeritas/CeleritasVintage.java
+@@ -24,7 +24,7 @@ import org.embeddedt.embeddium.impl.common.util.MathUtil;
+ import org.embeddedt.embeddium.impl.common.util.NativeBuffer;
+ import org.embeddedt.embeddium.impl.gl.device.GLRenderDevice;
+ import org.lwjgl.opengl.GL15;
+-import org.lwjgl.opengl.GL30;
++import org.embeddedt.embeddium.impl.gl.util.VertexArrayCompat;
+ import org.taumc.celeritas.impl.command.TogglePassCommand;
+ import org.taumc.celeritas.impl.gui.SodiumGameOptions;
+ import org.taumc.celeritas.impl.render.terrain.CeleritasWorldRenderer;
+@@ -32,14 +32,14 @@ import org.taumc.celeritas.impl.render.terrain.CeleritasWorldRenderer;
+ @Mod(modid = CeleritasVintage.MODID, useMetadata = true)
+ public class CeleritasVintage {
+     public static final String MODID = "celeritas";
+-    private static final Logger LOGGER = LogManager.getLogger("Pintonium");
++    private static final Logger LOGGER = LogManager.getLogger("Celeritas");
+     public static String VERSION;
+     private static final SodiumGameOptions CONFIG = loadConfig();
+ 
+     @EventHandler
+     public void onConstruct(FMLConstructionEvent event) {
+         GLRenderDevice.VANILLA_STATE_RESETTER = () -> {
+-            GL30.glBindVertexArray(0);
++            VertexArrayCompat.bind(0);
+             OpenGlHelper.glBindBuffer(OpenGlHelper.GL_ARRAY_BUFFER, 0);
+             GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, 0);
+         };
+@@ -63,7 +63,7 @@ public class CeleritasVintage {
+ 
+         var strings = event.getRight();
+         strings.add("");
+-        strings.add("%s%s Renderer (%s)".formatted(ChatFormatting.GREEN, "Pintonium", VERSION));
++        strings.add("%s%s Renderer (%s)".formatted(ChatFormatting.GREEN, "Celeritas", VERSION));
+ 
+         // Embeddium: Show a lot less with reduced debug info
+         if (Minecraft.getMinecraft().isReducedDebug()) {
+diff --git a/forge122/src/main/java/org/taumc/celeritas/mixin/core/terrain/RenderGlobalMixin.java b/forge122/src/main/java/org/taumc/celeritas/mixin/core/terrain/RenderGlobalMixin.java
+index cf1dcda..fba7fcf 100644
+--- a/forge122/src/main/java/org/taumc/celeritas/mixin/core/terrain/RenderGlobalMixin.java
++++ b/forge122/src/main/java/org/taumc/celeritas/mixin/core/terrain/RenderGlobalMixin.java
+@@ -47,6 +47,8 @@ import org.lwjgl.opengl.GL15;
+ import org.lwjgl.opengl.GL11;
+ import org.lwjgl.opengl.GL20;
+ import org.lwjgl.opengl.GL30;
++import org.embeddedt.embeddium.impl.gl.util.VertexArrayCompat;
++import org.embeddedt.embeddium.impl.gl.util.IntegerVertexAttribCompat;
+ 
+ import java.util.*;
+ import java.util.function.Consumer;
+@@ -432,7 +434,7 @@ public abstract class RenderGlobalMixin implements SimpleWorldRenderer.Provider<
+ 
+     @Unique
+     private void celeritas$resetVanillaEntityVertexInputs() {
+-        GL30.glBindVertexArray(0);
++        VertexArrayCompat.bind(0);
+         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
+         GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, 0);
+ 
+@@ -451,12 +453,12 @@ public abstract class RenderGlobalMixin implements SimpleWorldRenderer.Provider<
+             GL20.glDisableVertexAttribArray(attribute);
+         }
+ 
+-        GL30.glVertexAttribI3i(celeritas$IRIS_ENTITY_ATTRIBUTE_INDEX, 0, 0, 0);
++        IntegerVertexAttribCompat.vertexAttribI3i(celeritas$IRIS_ENTITY_ATTRIBUTE_INDEX, 0, 0, 0);
+     }
+ 
+     @Unique
+     private void celeritas$setIrisEntityAttribute(int shaderEntityId) {
+-        GL30.glVertexAttribI3i(celeritas$IRIS_ENTITY_ATTRIBUTE_INDEX, shaderEntityId, 0, 0);
++        IntegerVertexAttribCompat.vertexAttribI3i(celeritas$IRIS_ENTITY_ATTRIBUTE_INDEX, shaderEntityId, 0, 0);
+     }
+ 
+     @Unique
+diff --git a/forge122/src/shaders/java/net/irisshaders/iris/IrisVintage.java b/forge122/src/shaders/java/net/irisshaders/iris/IrisVintage.java
+index c9095d4..525a98b 100644
+--- a/forge122/src/shaders/java/net/irisshaders/iris/IrisVintage.java
++++ b/forge122/src/shaders/java/net/irisshaders/iris/IrisVintage.java
+@@ -28,6 +28,7 @@ import org.lwjgl.opengl.GL13;
+ import org.lwjgl.opengl.GL15;
+ import org.lwjgl.opengl.GL20;
+ import org.lwjgl.opengl.GL30;
++import org.embeddedt.embeddium.impl.gl.util.VertexArrayCompat;
+ 
+ import java.io.IOException;
+ import java.lang.reflect.InvocationTargetException;
+@@ -345,7 +346,7 @@ public class IrisVintage implements CeleritasShaderVersionService {
+     }
+ 
+     private static void resetVanillaRenderDeviceState() {
+-        GL30.glBindVertexArray(0);
++        VertexArrayCompat.bind(0);
+         OpenGlHelper.glBindBuffer(OpenGlHelper.GL_ARRAY_BUFFER, 0);
+         GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, 0);
+     }
+diff --git a/forge122/src/shaders/java/net/irisshaders/iris/pathways/VintageFullScreenQuadRenderer.java b/forge122/src/shaders/java/net/irisshaders/iris/pathways/VintageFullScreenQuadRenderer.java
+index a0af0e1..d9ec03a 100644
+--- a/forge122/src/shaders/java/net/irisshaders/iris/pathways/VintageFullScreenQuadRenderer.java
++++ b/forge122/src/shaders/java/net/irisshaders/iris/pathways/VintageFullScreenQuadRenderer.java
+@@ -4,7 +4,7 @@ import org.lwjgl.BufferUtils;
+ import org.lwjgl.opengl.GL11;
+ import org.lwjgl.opengl.GL15;
+ import org.lwjgl.opengl.GL20;
+-import org.lwjgl.opengl.GL30;
++import org.embeddedt.embeddium.impl.gl.util.VertexArrayCompat;
+ 
+ import java.nio.FloatBuffer;
+ 
+@@ -36,7 +36,7 @@ public class VintageFullScreenQuadRenderer implements FullScreenQuadRenderer {
+         GL11.glDepthMask(false);
+         GL11.glDisable(GL11.GL_CULL_FACE);
+ 
+-        GL30.glBindVertexArray(vao);
++        VertexArrayCompat.bind(vao);
+         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, vbo);
+         GL20.glEnableVertexAttribArray(0);
+         GL20.glEnableVertexAttribArray(1);
+@@ -54,7 +54,7 @@ public class VintageFullScreenQuadRenderer implements FullScreenQuadRenderer {
+         GL20.glDisableVertexAttribArray(1);
+         GL20.glDisableVertexAttribArray(0);
+         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
+-        GL30.glBindVertexArray(0);
++        VertexArrayCompat.bind(0);
+ 
+         if (this.depthTestEnabled) {
+             GL11.glEnable(GL11.GL_DEPTH_TEST);
+@@ -86,13 +86,13 @@ public class VintageFullScreenQuadRenderer implements FullScreenQuadRenderer {
+         FloatBuffer buffer = BufferUtils.createFloatBuffer(vertices.length);
+         buffer.put(vertices).flip();
+ 
+-        vao = GL30.glGenVertexArrays();
++        vao = VertexArrayCompat.generate();
+         vbo = GL15.glGenBuffers();
+ 
+-        GL30.glBindVertexArray(vao);
++        VertexArrayCompat.bind(vao);
+         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, vbo);
+         GL15.glBufferData(GL15.GL_ARRAY_BUFFER, buffer, GL15.GL_STATIC_DRAW);
+         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, 0);
+-        GL30.glBindVertexArray(0);
++        VertexArrayCompat.bind(0);
+     }
+ }
+diff --git a/forge122/src/shaders/java/org/embeddedt/embeddium/impl/gl/GLStateManagerImpl.java b/forge122/src/shaders/java/org/embeddedt/embeddium/impl/gl/GLStateManagerImpl.java
+index 70fc55f..a945654 100644
+--- a/forge122/src/shaders/java/org/embeddedt/embeddium/impl/gl/GLStateManagerImpl.java
++++ b/forge122/src/shaders/java/org/embeddedt/embeddium/impl/gl/GLStateManagerImpl.java
+@@ -11,6 +11,7 @@ import org.lwjgl.opengl.GL14;
+ import org.lwjgl.opengl.GL15;
+ import org.lwjgl.opengl.GL20;
+ import org.lwjgl.opengl.GL30;
++import org.embeddedt.embeddium.impl.gl.util.VertexArrayCompat;
+ 
+ import java.nio.IntBuffer;
+ 
+@@ -119,12 +120,12 @@ public class GLStateManagerImpl implements GLStateManagerService {
+ 
+     @Override
+     public int glGenVertexArrays() {
+-        return GL30.glGenVertexArrays();
++        return VertexArrayCompat.generate();
+     }
+ 
+     @Override
+     public void glBindVertexArray(int array) {
+-        GL30.glBindVertexArray(array);
++        VertexArrayCompat.bind(array);
+     }
+ 
+     @Override
