@@ -1,0 +1,118 @@
+name: Temporary Celeritas macOS GL21 Clean Build
+
+on:
+  push:
+    branches:
+      - temp-celeritas-macos-gl21-clean-20260715
+  pull_request:
+    branches:
+      - 1.16.X-dev
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout clean CI branch
+        uses: actions/checkout@v4
+
+      - name: Download compatibility sources from staging branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          root='https://raw.githubusercontent.com/kristitrnka/MrCrayfishVehicleMod-Port-Test/temp-celeritas-macos-float-attrs-20260715'
+          curl -fsSL "$root/temp-celeritas-macos-gl21/full-patch.gz.b64" -o full-patch.gz.b64
+          curl -fsSL "$root/temp-celeritas-macos-gl21/EntityPatcherNew.java" -o EntityPatcherNew.java
+          base64 -d full-patch.gz.b64 | gzip -d > macos_gl21_complete.patch
+          test -s macos_gl21_complete.patch
+          grep -q 'FallbackStagingBuffer' macos_gl21_complete.patch
+          grep -q '#version 120' macos_gl21_complete.patch
+
+      - name: Clone Pintonium-derived bridge source
+        shell: bash
+        run: git clone --depth 1 https://github.com/Xplodin/Pintonium.git pintonium
+
+      - name: Apply macOS OpenGL 2.1 renderer patch
+        working-directory: pintonium
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check ../macos_gl21_complete.patch
+          git apply ../macos_gl21_complete.patch
+          cp ../EntityPatcherNew.java common-shaders/src/main/java/net/irisshaders/iris/pipeline/foss_transform/EntityPatcherNew.java
+
+      - name: Set up Java toolchains
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            8
+            17
+            21
+
+      - name: Patch old build dependencies
+        working-directory: pintonium
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i 's/gradle-9\.6\.0-bin\.zip/gradle-8.14.3-bin.zip/' gradle/wrapper/gradle-wrapper.properties
+          sed -i 's/stonecutter_version=0\.9\.6/stonecutter_version=0.7.11/' gradle.properties
+          sed -i 's/dev.kikugie.stonecutter.settings.tree.TreeBuilder/dev.kikugie.stonecutter.data.tree.builder.TreeBuilder/' settings.gradle.kts
+          sed -i 's/centralScript\.set("build.gradle.kts")/centralScript = "build.gradle.kts"/' settings.gradle.kts
+          sed -i 's/val versionConfig = version(/val versionConfig = vers(/' settings.gradle.kts
+          sed -i 's/versionConfig\.buildscript("build\.\${buildscriptType}\.gradle.kts")/versionConfig.buildscript = "build.${buildscriptType}.gradle.kts"/' settings.gradle.kts
+          sed -i 's#com.gradleup.shadow:com.gradleup.shadow.gradle.plugin:9\.4\.2#com.gradleup.shadow:shadow-gradle-plugin:8.3.8#' buildSrc/build.gradle.kts plugins/celeritas-unimined-plugin/build.gradle.kts
+          sed -i 's#dev.kikugie.stonecutter:dev.kikugie.stonecutter.gradle.plugin:0\.9\.6#dev.kikugie:stonecutter:0.7.11#' buildSrc/build.gradle.kts
+          sed -i 's/stonecutterExt.constants.getting("settings_gui").orElse(false).get()/stonecutterExt.constants.getOrDefault("settings_gui", false)/' buildSrc/src/main/kotlin/celeritas.platform-conventions.gradle.kts
+          sed -i 's/import org.gradle.api.Project;/import kotlin.Unit;\nimport org.gradle.api.Project;/' buildSrc/src/main/java/org/embeddedt/embeddium/gradle/stonecutter/ModDependencyCollector.java
+          sed -i '0,/^        });$/s//            return Unit.INSTANCE;\n        });/' buildSrc/src/main/java/org/embeddedt/embeddium/gradle/stonecutter/ModDependencyCollector.java
+          sed -i 's/shadowJar.getConfigurations().set(List.<Configuration>of());/shadowJar.getConfigurations().clear();/' plugins/celeritas-unimined-plugin/src/main/java/org/embeddedt/embeddium/gradle/unimined/ProductionJarHelper.java
+          sed -i 's/shadowJar.getConfigurations().set(List.of(project.getConfigurations().getByName("shadow")));/shadowJar.getConfigurations().clear();\n            shadowJar.getConfigurations().add(project.getConfigurations().getByName("shadow"));/' plugins/celeritas-unimined-plugin/src/main/java/org/embeddedt/embeddium/gradle/unimined/ProductionJarHelper.java
+          sed -i 's/RetroFuturaBootstrap:1\.0\.7/RetroFuturaBootstrap:1.0.11/' forge122/build.gradle.kts
+          printf '\n// Allow Gradle 8 Kotlin to read Stonecutter metadata.\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    compilerOptions.freeCompilerArgs.add("-Xskip-metadata-version-check")\n}\n' >> buildSrc/build.gradle.kts
+
+      - name: Build Forge 1.12.2 jar
+        id: build
+        working-directory: pintonium
+        shell: bash
+        run: |
+          chmod +x gradlew
+          set +e
+          ./gradlew -Ptarget_versions=1.12.2 packageJar --stacktrace --console=plain > ../build.log 2>&1
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          tail -n 300 ../build.log
+          exit 0
+
+      - name: Collect production jar
+        if: steps.build.outputs.exit_code == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/source
+          find pintonium -type f -path '*/build/libs/*' -name '*.jar' -printf '%s %p\n' | sort -nr
+          jar_path=$(find pintonium -type f -path '*/build/libs/*' -name '*.jar' ! -name '*-dev.jar' ! -name '*-sources.jar' ! -name '*-shadow.jar' -printf '%s %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
+          test -n "$jar_path"
+          cp "$jar_path" output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
+          cp macos_gl21_complete.patch output/source/tracked-changes.patch
+          cp EntityPatcherNew.java output/source/
+          cp build.log output/source/
+          sha256sum output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar > output/SHA256SUMS.txt
+          unzip -t output/Celeritas-Shaders-Pintonium-Bridge-1.12.2-macOS-GL21-full-compat.jar
+
+      - name: Upload build and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: celeritas-shaders-macos-gl21-full-compat
+          path: |
+            build.log
+            output/*
+            output/source/*
+          if-no-files-found: error
+
+      - name: Fail if build failed
+        if: steps.build.outputs.exit_code != '0'
+        run: exit 1
