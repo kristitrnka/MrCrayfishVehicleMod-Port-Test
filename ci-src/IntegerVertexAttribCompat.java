@@ -1,6 +1,7 @@
 package org.embeddedt.embeddium.impl.gl.util;
 
 import org.lwjgl.opengl.GL;
+import org.lwjgl.opengl.GL20C;
 import org.lwjgl.opengl.GL30C;
 import org.lwjgl.opengl.GLCapabilities;
 
@@ -22,6 +23,12 @@ public final class IntegerVertexAttribCompat {
     private IntegerVertexAttribCompat() {
     }
 
+    public static boolean isIntegerAttributesSupported() {
+        GLCapabilities capabilities = GL.getCapabilities();
+        return capabilities.glVertexAttribI3i != 0L ||
+                (capabilities.GL_EXT_gpu_shader4 && EXT_ATTRIB_I3I != null && EXT_ATTRIB_I_POINTER != null);
+    }
+
     public static void vertexAttribI3i(int index, int x, int y, int z) {
         GLCapabilities capabilities = GL.getCapabilities();
         if (capabilities.glVertexAttribI3i != 0L) {
@@ -36,7 +43,11 @@ public final class IntegerVertexAttribCompat {
                 throw propagate(throwable);
             }
         }
-        throw new UnsupportedOperationException("Integer vertex attributes are not supported by the current OpenGL context");
+
+        // OpenGL 2.1 on macOS has no integer generic attributes. Entity and
+        // material IDs are small enough to be represented exactly as floats.
+        // The shader transformer uses vec3 and casts the values back to int.
+        GL20C.glVertexAttrib3f(index, x, y, z);
     }
 
     public static void vertexAttribIPointer(int index, int size, int type, int stride, long pointer) {
@@ -53,7 +64,10 @@ public final class IntegerVertexAttribCompat {
                 throw propagate(throwable);
             }
         }
-        throw new UnsupportedOperationException("Integer vertex attributes are not supported by the current OpenGL context");
+
+        // Best-effort legacy path. This is valid for shader inputs rewritten
+        // to floating point by the macOS compatibility transformer.
+        GL20C.glVertexAttribPointer(index, size, type, false, stride, pointer);
     }
 
     private static MethodHandle findExtMethod(String name, MethodType type) {
